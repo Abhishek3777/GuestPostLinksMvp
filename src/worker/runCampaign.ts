@@ -2,6 +2,8 @@ import pLimit from "p-limit";
 import { crawlDomain } from "../pipeline.js";
 import { runFilterStage, seedDirectProspects } from "../filter/index.js";
 import { runContactStage } from "./contactStage.js";
+import { makePauseCheck } from "./pauseCheck.js";
+import { updateContactStageStatus } from "../db/contactResults.js";
 import {
   getCampaign,
   getCampaignDomains,
@@ -20,11 +22,30 @@ function errorMessage(err: unknown): string {
 
 const CONCURRENCY = Math.max(1, Number(process.env.CRAWL_CONCURRENCY) || 5);
 
+// Park a campaign the user paused part-way: back to "queued" (the claim query skips
+// it while it is paused) with its contact stage reset, so Resume runs the whole job
+// again and it carries on from what is still unfinished — crawl skips domains
+// already checked, contact lookup only touches prospects still pending.
+async function parkPausedCampaign(campaignId: string): Promise<void> {
+  await updateCampaignStatus(campaignId, "queued");
+  await updateContactStageStatus(campaignId, "not_started");
+  console.log(`[worker] campaign ${campaignId} paused — it will continue from here when resumed`);
+}
+
 export async function runCampaignWorker(campaignId: string): Promise<void> {
   const campaign = await getCampaign(campaignId);
   if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
 
   const domains = await getCampaignDomains(campaignId);
+
+  // Nothing to work on is a FAILED campaign, not a completed one — "completed" with
+  // 0 of 0 domains told a user their run had succeeded when it never began.
+  if (domains.length === 0) {
+    console.error(`[worker] campaign ${campaignId} has no domains — marking it failed`);
+    await updateCampaignStatus(campaignId, "failed", { completedAt: new Date() });
+    return;
+  }
+
   await updateCampaignStatus(campaignId, "running", { startedAt: new Date() });
 
   try {
@@ -36,7 +57,10 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
       // contact, just get me their contact info."
       const filterResult = await seedDirectProspects(campaignId, domains);
       console.log(`Direct mode filter: ${filterResult.kept} kept, ${filterResult.excluded} excluded`, filterResult.byReason);
-      await runContactStage(campaignId);
+      if ((await runContactStage(campaignId)) === "paused") {
+        await parkPausedCampaign(campaignId);
+        return;
+      }
     } else {
       // "Discovery" mode: the normal 3-stage flow. Stage 3 is a separate,
       // manually-triggered step from the dashboard — not run here — so you
@@ -48,9 +72,17 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
       }
 
       const limit = pLimit(CONCURRENCY);
+      const shouldPause = makePauseCheck(campaignId);
+      let leftForPause = 0;
       await Promise.all(
         remaining.map((domain) =>
           limit(async () => {
+            // Paused from the dashboard: start nothing new (sites already in flight
+            // finish and are saved normally).
+            if (await shouldPause()) {
+              leftForPause++;
+              return;
+            }
             // One bad domain must never sink the whole campaign: whatever goes
             // wrong here is recorded as THAT domain's result and the rest carry on.
             try {
@@ -83,6 +115,11 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
         )
       );
 
+      if (leftForPause > 0) {
+        await parkPausedCampaign(campaignId);
+        return;
+      }
+
       const filterResult = await runFilterStage(campaignId, { incremental: campaign.incremental });
       console.log(`Filter stage: ${filterResult.kept} kept, ${filterResult.excluded} excluded`, filterResult.byReason);
 
@@ -90,7 +127,10 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
       // campaign asked for it (otherwise stop and wait for the manual button).
       if (campaign.autoContact) {
         console.log("Auto contact lookup enabled — running Stage 3 on kept prospects");
-        await runContactStage(campaignId);
+        if ((await runContactStage(campaignId)) === "paused") {
+          await parkPausedCampaign(campaignId);
+          return;
+        }
       }
     }
 

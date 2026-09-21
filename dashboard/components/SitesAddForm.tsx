@@ -65,12 +65,12 @@ export function SitesAddForm() {
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text transition-colors hover:bg-surface-2"
         >
           <UploadCloud size={14} />
-          {file ? file.name : "Upload .csv / .txt"}
+          {file ? file.name : "Upload .csv / .xlsx"}
         </button>
         <input
           ref={fileRef}
           type="file"
-          accept=".csv,.txt"
+          accept=".csv,.txt,.xlsx"
           className="hidden"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />

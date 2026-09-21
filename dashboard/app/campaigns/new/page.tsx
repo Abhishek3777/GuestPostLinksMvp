@@ -27,7 +27,7 @@ function NewCampaignForm() {
     setError(null);
 
     if (inputMethod === "upload" && !file) {
-      setError(mode === "discovery" ? "Upload a domains CSV first" : "Upload a target-domains CSV first");
+      setError(mode === "discovery" ? "Upload a domains file first" : "Upload a target-domains file first");
       return;
     }
     if (inputMethod === "paste" && !domainsText.trim()) {
@@ -41,16 +41,24 @@ function NewCampaignForm() {
     else formData.set("domainsText", domainsText);
     formData.set("mode", mode);
 
-    const res = await fetch("/api/campaigns", { method: "POST", body: formData });
-    const data = await res.json();
+    // Whatever goes wrong (server error, dropped connection, a reply that is not
+    // JSON) must end with a visible message and a usable button — never a
+    // button stuck on "Starting…".
+    try {
+      const res = await fetch("/api/campaigns", { method: "POST", body: formData });
+      const data = await res.json().catch(() => ({}));
 
-    if (!res.ok) {
-      setError(data.error ?? "Something went wrong");
+      if (!res.ok || !data.campaignId) {
+        setError(data.error ?? "Something went wrong. Nothing was started — please try again.");
+        setSubmitting(false);
+        return;
+      }
+
+      router.push(`/campaigns/${data.campaignId}`);
+    } catch {
+      setError("Could not reach the server. Check your connection and try again.");
       setSubmitting(false);
-      return;
     }
-
-    router.push(`/campaigns/${data.campaignId}`);
   }
 
   return (
@@ -147,11 +155,11 @@ function NewCampaignForm() {
               <p className="text-sm text-text">
                 <span className="font-medium text-accent">Click to upload</span> or drag and drop
               </p>
-              <p className="text-xs text-muted">.csv or .txt — one domain per line</p>
+              <p className="text-xs text-muted">.csv, .txt or .xlsx — one domain per row (first column)</p>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.txt"
+                accept=".csv,.txt,.xlsx"
                 className="hidden"
                 onChange={(e) => pickFile(e.target.files?.[0])}
               />

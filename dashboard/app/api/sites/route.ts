@@ -1,21 +1,24 @@
 import { NextResponse } from "next/server";
-import { parseDomainsCsv, parseDomainsText } from "@/lib/csv";
+import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
 import { addSites, setSitesActive, type SiteFilter } from "@/services/sites.service";
 
-// Add sites: pasted text and/or an uploaded .csv/.txt (same loose formats as a
+// Add sites: pasted text and/or an uploaded .csv/.txt/.xlsx (same formats as a
 // campaign upload). Existing sites are left exactly as they are.
 export async function POST(req: Request) {
-  const formData = await req.formData();
-  const text = String(formData.get("domainsText") ?? "").trim();
-  const file = formData.get("domainsFile") as File | null;
+  try {
+    const formData = await req.formData();
+    const text = String(formData.get("domainsText") ?? "").trim();
+    const file = formData.get("domainsFile") as File | null;
 
-  const domains = [
-    ...(file ? parseDomainsCsv(await file.text()) : []),
-    ...(text ? parseDomainsText(text) : []),
-  ];
-  if (!domains.length) return NextResponse.json({ error: "Add at least one domain" }, { status: 400 });
+    const domains = [...(file ? await readDomainsFromFile(file) : []), ...(text ? domainsFromText(text) : [])];
+    if (!domains.length) return NextResponse.json({ error: "No valid domains found. Add one per row." }, { status: 400 });
 
-  return NextResponse.json(await addSites(domains));
+    return NextResponse.json(await addSites(domains));
+  } catch (err) {
+    if (err instanceof UnreadableFileError) return NextResponse.json({ error: err.message }, { status: 400 });
+    console.error("[api/sites] failed:", err);
+    return NextResponse.json({ error: "Something went wrong. Nothing was added." }, { status: 500 });
+  }
 }
 
 // Bulk activate / pause. Scoped to the list's current search and filter, so

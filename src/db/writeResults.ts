@@ -75,7 +75,10 @@ export async function updateCampaignStatus(
   status: (typeof campaigns.$inferInsert)["status"],
   extra: Partial<{ startedAt: Date; completedAt: Date }> = {}
 ) {
-  await db.update(campaigns).set({ status, ...extra }).where(eq(campaigns.id, campaignId));
+  // A finished campaign is no longer pausable; clearing the flag stops a stale
+  // "paused" from blocking a later manual contact-stage run.
+  const finished = status === "completed" || status === "failed";
+  await db.update(campaigns).set({ status, ...(finished ? { paused: false } : {}), ...extra }).where(eq(campaigns.id, campaignId));
 }
 
 export async function saveCrawlResult(campaignId: string, result: CrawlDomainResult) {

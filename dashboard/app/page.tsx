@@ -4,6 +4,8 @@ import { listCampaigns } from "@/services/campaigns.service";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
 import { ExportMenu } from "@/components/ExportMenu";
+import { PauseResumeButton } from "@/components/PauseResumeButton";
+import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 
 export const dynamic = "force-dynamic";
 
@@ -11,13 +13,8 @@ export default async function CampaignsPage() {
   const campaigns = await listCampaigns();
 
   const totalProspects = campaigns.reduce((sum, c) => sum + c.keptProspects, 0);
-  const runningCount = campaigns.filter(
-    (c) =>
-      c.status === "queued" ||
-      c.status === "running" ||
-      c.contactStageStatus === "queued" ||
-      c.contactStageStatus === "running"
-  ).length;
+  // A campaign parked by Pause is not "running now".
+  const runningCount = campaigns.filter((c) => isActive(c) && displayStatus(c) !== "paused").length;
 
   return (
     <div className="flex flex-col gap-8">
@@ -76,11 +73,14 @@ export default async function CampaignsPage() {
                     )}
                   </td>
                   <td className="px-5 py-4">
-                    <StatusBadge status={c.status} />
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={displayStatus(c)} />
+                      {canPauseOrResume(c) && <PauseResumeButton campaignId={c.id} action={canPauseOrResume(c)!} compact />}
+                    </div>
                   </td>
                   <td className="px-5 py-4">
                     {c.mode === "direct" ? (
-                      <StatusBadge status={c.contactStageStatus} />
+                      <StatusBadge status={c.paused && isActive(c) ? displayStatus(c) : c.contactStageStatus} />
                     ) : (
                       <div className="flex items-center gap-2">
                         <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2">

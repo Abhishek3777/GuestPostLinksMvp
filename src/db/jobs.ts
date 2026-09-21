@@ -11,7 +11,7 @@ export async function claimNextCampaign(): Promise<string | null> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE campaigns SET status = 'running'
     WHERE id = (
-      SELECT id FROM campaigns WHERE status = 'queued'
+      SELECT id FROM campaigns WHERE status = 'queued' AND paused = false
       ORDER BY created_at LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
@@ -24,7 +24,7 @@ export async function claimNextContactStage(): Promise<string | null> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE campaigns SET contact_stage_status = 'running', contact_stage_started_at = now()
     WHERE id = (
-      SELECT id FROM campaigns WHERE contact_stage_status = 'queued'
+      SELECT id FROM campaigns WHERE contact_stage_status = 'queued' AND paused = false
       ORDER BY created_at LIMIT 1
       FOR UPDATE SKIP LOCKED
     )

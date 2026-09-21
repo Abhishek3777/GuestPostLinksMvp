@@ -66,6 +66,10 @@ export const campaigns = pgTable("campaigns", {
   // run already found and looked up is not delivered again. Ordinary one-off
   // campaigns leave this off and always start fresh.
   incremental: boolean("incremental").notNull().default(false),
+  // Set from the dashboard's Pause button. The worker stops starting new work on a
+  // paused campaign (sites already in flight finish), leaves it "queued", and will
+  // not pick it up again until Resume clears the flag.
+  paused: boolean("paused").notNull().default(false),
   daysWindow: integer("days_window"), // null = no date cutoff, just targetPostCount
   targetPostCount: integer("target_post_count").notNull(),
   status: campaignStatus("status").notNull().default("queued"),

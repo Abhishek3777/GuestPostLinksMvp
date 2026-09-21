@@ -18,7 +18,7 @@ export function DncUploadForm() {
     const formData = new FormData();
     formData.set("domainsFile", file);
     const res = await fetch("/api/do-not-contact", { method: "POST", body: formData });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
 
     setSubmitting(false);
     if (!res.ok) {
@@ -42,7 +42,7 @@ export function DncUploadForm() {
       <input
         ref={inputRef}
         type="file"
-        accept=".csv,.txt"
+        accept=".csv,.txt,.xlsx"
         className="hidden"
         onChange={(e) => handleFile(e.target.files?.[0])}
       />

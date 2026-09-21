@@ -44,6 +44,7 @@ export const campaigns = pgTable("campaigns", {
   mode: campaignMode("mode").notNull().default("discovery"),
   autoContact: boolean("auto_contact").notNull().default(false),
   incremental: boolean("incremental").notNull().default(false),
+  paused: boolean("paused").notNull().default(false),
   daysWindow: integer("days_window"),
   targetPostCount: integer("target_post_count").notNull(),
   status: campaignStatus("status").notNull().default("queued"),
