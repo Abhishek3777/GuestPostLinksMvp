@@ -1,0 +1,1 @@
+ALTER TYPE "public"."contact_stage_status" ADD VALUE 'queued' BEFORE 'running';

@@ -1,0 +1,1 @@
+ALTER TABLE "guest_post_prospects" ADD COLUMN "contact_reason" text;

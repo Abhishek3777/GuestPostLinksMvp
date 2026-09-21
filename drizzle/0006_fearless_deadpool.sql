@@ -1,0 +1,1 @@
+ALTER TABLE "campaigns" ADD COLUMN "auto_contact" boolean DEFAULT false NOT NULL;

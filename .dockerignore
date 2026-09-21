@@ -1,0 +1,19 @@
+# Build context is the repo root, so keep out everything an image must not
+# contain: dependencies (reinstalled inside), build output, secrets, and the
+# client's prospect/contact data files.
+**/node_modules
+**/.next
+.git
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+logs
+data
+extracted
+drizzle
+*.xlsx
+*.csv
+*.7z
+dashboard/scripts
+**/*.tsbuildinfo

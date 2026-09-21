@@ -1,0 +1,30 @@
+# Worker image (crawl + contact lookup daemon). Build context = the repo root.
+#
+#   docker build -f deploy/Dockerfile.worker -t gpl-worker .
+#
+# The worker is a plain Node process that polls the database for queued
+# campaigns (src/worker/daemon.ts) — no port, no web server. It is run through
+# tsx rather than compiled, because that is exactly how it runs in development.
+FROM node:22-slim
+
+# curl: the crawler shells out to it as its fallback for sites that challenge
+# Node's TLS fingerprint (src/httpClient.ts) — slim images do not ship it.
+# tini: PID 1, so those curl child processes are reaped instead of piling up.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates tini \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+# tsx (which runs the worker) is a regular dependency, so --omit=dev is safe.
+RUN npm ci --omit=dev
+
+COPY tsconfig.json ./
+COPY src src
+
+# Secrets (DATABASE_URL, PROXY_URL...) come from the platform's environment,
+# never from the image — .dockerignore keeps every .env file out of it.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node_modules/.bin/tsx", "src/worker/daemon.ts"]

@@ -1,0 +1,39 @@
+{
+  "name": "guest-post-links-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "worker": "tsx src/worker/daemon.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "discover:test": "tsx src/discovery/test-discover.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "cacheable-lookup": "^7.0.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^17.4.0",
+    "drizzle-orm": "^0.45.2",
+    "fast-xml-parser": "^4.5.0",
+    "got": "^14.4.5",
+    "hpagent": "^1.2.0",
+    "jsdom": "^25.0.1",
+    "p-limit": "^6.2.0",
+    "postgres": "^3.4.8",
+    "robots-parser": "^3.0.1",
+    "tldts": "^7.4.13",
+    "tsx": "^4.19.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^20",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5"
+  }
+}

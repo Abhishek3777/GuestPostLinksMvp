@@ -1,0 +1,15 @@
+node_modules/
+.env
+dist/
+data/*.db
+data/exports/
+*.log
+
+# Client prospect / contact data — never belongs in a repo (or an image)
+GuestPostLinks.xlsx
+RootDomainContacts.xlsx
+*.7z
+blocked-sites*.csv
+domains_meta.csv
+phase3-test-domains.csv
+extracted/

@@ -1,0 +1,1 @@
+ALTER TABLE "guest_post_links" ADD COLUMN "source_domain" text;
