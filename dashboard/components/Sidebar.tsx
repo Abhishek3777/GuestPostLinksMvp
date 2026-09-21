@@ -18,7 +18,7 @@ const NAV = [
   { href: "/do-not-contact", label: "Do Not Contact", icon: ShieldOff, exact: true },
 ];
 
-export function Sidebar() {
+export function Sidebar({ email }: { email: string }) {
   const pathname = usePathname();
 
   return (
@@ -62,7 +62,7 @@ export function Sidebar() {
       <div className="mt-auto flex items-center justify-end px-5 py-4">
         <ThemeToggle />
       </div>
-      <UserMenu />
+      <UserMenu email={email} />
     </aside>
   );
 }
