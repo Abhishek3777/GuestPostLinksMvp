@@ -111,40 +111,80 @@ export function SitesBulkActions({ visibleCount }: { visibleCount: number }) {
   );
 }
 
+// Same format the backend falls back to when no name is given, shown as a
+// placeholder so the field is never blank-feeling even before you type.
+function defaultRunName() {
+  return `Monitor run — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+}
+
 export function RunSitesButton({ activeCount }: { activeCount: number }) {
   const router = useRouter();
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function run() {
-    if (
-      !confirm(
-        `Run ${activeCount.toLocaleString()} active site${activeCount === 1 ? "" : "s"} now? New posts since the last run are crawled and their contacts looked up.`
-      )
-    )
-      return;
+  async function start() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/sites/run", { method: "POST" });
+    const res = await fetch("/api/sites/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: name.trim() || undefined }),
+    });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.campaignId) {
       router.push(`/campaigns/${data.campaignId}`);
       return;
     }
     setBusy(false);
+    setNaming(false);
     setError(data.error ?? "Could not start the run");
     router.refresh();
+  }
+
+  if (naming) {
+    return (
+      <div className="flex flex-col items-end gap-1.5 rounded-lg border border-border bg-surface p-3">
+        <label className="self-start text-xs font-medium text-muted">Campaign name (optional)</label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && start()}
+          placeholder={defaultRunName()}
+          className="w-64 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm text-text outline-none ring-accent/40 placeholder:text-muted/70 focus:ring-2"
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={() => setNaming(false)}
+            disabled={busy}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-2 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={start}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={13} className="animate-spin" /> : <Rocket size={13} />}
+            {busy ? "Starting…" : `Run ${activeCount.toLocaleString()} site${activeCount === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col items-end gap-1">
       <button
-        onClick={run}
-        disabled={busy || activeCount === 0}
+        onClick={() => setNaming(true)}
+        disabled={activeCount === 0}
         className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
-        {busy ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />}
-        {busy ? "Starting…" : `Run active sites (${activeCount.toLocaleString()})`}
+        <Rocket size={15} />
+        Run active sites ({activeCount.toLocaleString()})
       </button>
       {error && <span className="max-w-xs text-right text-xs text-danger">{error}</span>}
     </div>
