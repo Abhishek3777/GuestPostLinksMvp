@@ -22,7 +22,7 @@ function parseRssOrAtom(xml: string): DiscoveredPost[] {
         title: item.title,
         publishedAt: item.pubDate ?? null,
       }))
-      .filter((p): p is DiscoveredPost => typeof p.url === "string");
+      .filter((p) => typeof p.url === "string") as DiscoveredPost[];
   }
 
   const atomEntries = asArray<any>(parsed?.feed?.entry);
@@ -38,7 +38,7 @@ function parseRssOrAtom(xml: string): DiscoveredPost[] {
           publishedAt: entry.updated ?? entry.published ?? null,
         };
       })
-      .filter((p): p is DiscoveredPost => typeof p.url === "string");
+      .filter((p) => typeof p.url === "string") as DiscoveredPost[];
   }
 
   return [];

@@ -27,7 +27,7 @@ export async function tryFetchWpApi(
       title: p.title?.rendered,
       publishedAt: p.date ?? null,
     }))
-    .filter((p): p is DiscoveredPost => typeof p.url === "string");
+    .filter((p) => typeof p.url === "string") as DiscoveredPost[];
 
   return posts.length ? posts : null;
 }

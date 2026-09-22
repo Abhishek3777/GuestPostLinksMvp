@@ -16,7 +16,7 @@ async function parseUrlset(xml: string): Promise<DiscoveredPost[]> {
   const entries = asArray<any>(parsed?.urlset?.url);
   return entries
     .map((e) => ({ url: e.loc, publishedAt: e.lastmod ?? null }))
-    .filter((p): p is DiscoveredPost => typeof p.url === "string");
+    .filter((p) => typeof p.url === "string") as DiscoveredPost[];
 }
 
 function extractSubSitemaps(xml: string): string[] {

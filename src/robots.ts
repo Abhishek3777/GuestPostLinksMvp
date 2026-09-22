@@ -15,7 +15,7 @@ export async function loadRobots(domain: string): Promise<RobotsGate> {
   const res = await fetchText(robotsUrl);
   if (!res.ok || !res.body) return allowAll;
 
-  const robot: Robot = robotsParser(robotsUrl, res.body);
+  const robot: Robot = (robotsParser as unknown as (url: string, robotstxt: string) => Robot)(robotsUrl, res.body);
   return {
     isAllowed: (url: string) => robot.isAllowed(url, USER_AGENT) ?? true,
   };
