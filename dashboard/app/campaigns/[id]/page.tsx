@@ -71,7 +71,8 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         </div>
         {campaign.mode === "discovery" && (
           <p className="mt-1 text-sm text-muted">
-            Up to {campaign.targetPostCount} posts/domain{campaign.daysWindow ? ` · last ${campaign.daysWindow} days` : ""}
+            {campaign.targetPostCount >= 1000 ? "No limit" : `Up to ${campaign.targetPostCount}`} posts/domain
+            {campaign.daysWindow ? ` · last ${campaign.daysWindow} days` : ""}
           </p>
         )}
       </div>

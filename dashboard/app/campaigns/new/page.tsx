@@ -192,15 +192,21 @@ function NewCampaignForm() {
               <label htmlFor="targetPostCount" className="text-sm font-medium text-text">
                 Posts per domain
               </label>
-              <input
+              <select
                 id="targetPostCount"
                 name="targetPostCount"
-                type="number"
-                min={1}
-                max={100}
                 defaultValue={5}
                 className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text outline-none ring-accent/40 focus:ring-2"
-              />
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                {/* Same sentinel used for monitoring runs (see MONITOR_TARGET_POSTS) — high
+                    enough that only a domain's actual post count limits how many are read. */}
+                <option value={1000}>No limit</option>
+              </select>
             </div>
             <div className="flex flex-col gap-1.5">
               <label htmlFor="daysWindow" className="text-sm font-medium text-text">

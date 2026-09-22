@@ -9,9 +9,11 @@ export const SITES_PAGE_SIZE = 50;
 // very first run of a site has no "previous", so it looks this far back.
 const FIRST_RUN_DAYS = 30;
 const MAX_WINDOW_DAYS = 90;
-// Cap on new posts read per site per run — generous, since the date window
-// already keeps the number of candidates small.
-const MONITOR_TARGET_POSTS = 20;
+// Effectively no cap on new posts read per site per run — the date window
+// already keeps the number of real candidates small, and discovery itself
+// (WP API/sitemap/feed/HTML-fallback) bounds how many URLs come back per
+// domain, so this just needs to be higher than any realistic count.
+const MONITOR_TARGET_POSTS = 1000;
 
 export type SiteFilter = "all" | "active" | "paused";
 
