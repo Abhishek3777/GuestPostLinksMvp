@@ -7,7 +7,7 @@ const connectionString = process.env.DATABASE_URL!;
 // Next.js dev-mode Fast Refresh re-evaluates this module on every save.
 // Caching the client on globalThis (survives module reloads) avoids piling
 // up orphaned connections against Supabase's pooler. Same pattern as
-// ACG Official's lib/db.ts.
+// the other Supabase-backed apps' db setup.
 const globalForDb = globalThis as unknown as { postgresClient?: ReturnType<typeof postgres> };
 
 const client =

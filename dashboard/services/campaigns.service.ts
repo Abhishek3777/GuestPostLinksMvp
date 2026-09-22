@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects } from "@/lib/schema";
 
@@ -107,7 +107,7 @@ export async function createCampaign(opts: {
 export async function startContactStage(campaignId: string) {
   await db
     .update(campaigns)
-    .set({ contactStageStatus: "queued" })
+    .set({ contactStageStatus: "queued", paused: false })
     .where(
       and(
         eq(campaigns.id, campaignId),
@@ -116,4 +116,62 @@ export async function startContactStage(campaignId: string) {
         eq(campaigns.contactStageStatus, "not_started")
       )
     );
+}
+
+// Pause: only sets a flag. The worker stops starting new sites, lets the ones already
+// in flight finish, parks the campaign, and moves on to the next queued one.
+// Only meaningful while something is queued or running.
+export async function pauseCampaign(campaignId: string) {
+  await db
+    .update(campaigns)
+    .set({ paused: true })
+    .where(
+      and(
+        eq(campaigns.id, campaignId),
+        or(
+          inArray(campaigns.status, ["queued", "running"]),
+          inArray(campaigns.contactStageStatus, ["queued", "running"])
+        )
+      )
+    );
+}
+
+// Resume: clears the flag. A parked campaign is already "queued", so the worker
+// claims it again and continues with whatever is unfinished.
+export async function resumeCampaign(campaignId: string) {
+  await db.update(campaigns).set({ paused: false }).where(and(eq(campaigns.id, campaignId), eq(campaigns.paused, true)));
+}
+
+// Contact statuses worth another try: the site refused us, or the request timed out /
+// failed. Blocks in particular come and go (the same site can pass on one attempt and
+// challenge the next), so a later retry recovers some of them.
+export const RETRYABLE_CONTACT_STATUSES = ["blocked", "timeout", "dns_error", "error"] as const;
+
+// Puts every blocked/failed lead of a FINISHED campaign back to "pending" and queues its
+// contact stage. The worker's normal contact lookup then handles exactly those leads;
+// everything already reached is left untouched.
+export async function retryFailedContacts(
+  campaignId: string
+): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
+  const [c] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+  if (!c) return { ok: false, error: "Campaign not found" };
+  if (c.status !== "completed" || !["completed", "failed"].includes(c.contactStageStatus)) {
+    return { ok: false, error: "Wait for the campaign to finish before retrying." };
+  }
+
+  const reset = await db
+    .update(guestPostProspects)
+    .set({ contactStatus: "pending", contactReason: null, contactCheckedAt: null })
+    .where(
+      and(
+        eq(guestPostProspects.campaignId, campaignId),
+        isNull(guestPostProspects.exclusionReason),
+        inArray(guestPostProspects.contactStatus, [...RETRYABLE_CONTACT_STATUSES])
+      )
+    )
+    .returning({ id: guestPostProspects.id });
+  if (reset.length === 0) return { ok: false, error: "Nothing to retry." };
+
+  await db.update(campaigns).set({ contactStageStatus: "queued", paused: false }).where(eq(campaigns.id, campaignId));
+  return { ok: true, queued: reset.length };
 }

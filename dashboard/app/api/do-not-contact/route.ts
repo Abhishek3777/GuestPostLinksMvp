@@ -1,15 +1,23 @@
 import { NextResponse } from "next/server";
-import { parseDomainsCsv } from "@/lib/csv";
+import { readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
 import { addDoNotContactDomains } from "@/services/doNotContact.service";
 
 export async function POST(req: Request) {
-  const formData = await req.formData();
-  const file = formData.get("domainsFile") as File | null;
-  if (!file) return NextResponse.json({ error: "A CSV file is required" }, { status: 400 });
+  try {
+    const formData = await req.formData();
+    const file = formData.get("domainsFile") as File | null;
+    if (!file) return NextResponse.json({ error: "A CSV, TXT or Excel file is required" }, { status: 400 });
 
-  const text = await file.text();
-  const domains = parseDomainsCsv(text);
-  const added = await addDoNotContactDomains(domains);
+    const domains = await readDomainsFromFile(file);
+    if (domains.length === 0) {
+      return NextResponse.json({ error: "No valid domains were found in that file." }, { status: 400 });
+    }
+    const added = await addDoNotContactDomains(domains);
 
-  return NextResponse.json({ added });
+    return NextResponse.json({ added });
+  } catch (err) {
+    if (err instanceof UnreadableFileError) return NextResponse.json({ error: err.message }, { status: 400 });
+    console.error("[api/do-not-contact] failed:", err);
+    return NextResponse.json({ error: "Something went wrong. Nothing was added." }, { status: 500 });
+  }
 }

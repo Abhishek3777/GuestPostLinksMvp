@@ -5,6 +5,8 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   completed: "success",
   running: "info",
   queued: "neutral",
+  paused: "warning",
+  pausing: "warning",
   blocked: "warning",
   no_posts_found: "warning",
   dns_error: "danger",
@@ -45,7 +47,7 @@ const DOT_STYLES: Record<Tone, string> = {
 
 export function StatusBadge({ status }: { status: string }) {
   const tone = TONE_BY_STATUS[status] ?? "neutral";
-  const pulse = status === "running" || status === "queued";
+  const pulse = status === "running" || status === "queued" || status === "pausing";
 
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${TONE_STYLES[tone]}`}>

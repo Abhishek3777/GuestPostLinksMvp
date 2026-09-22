@@ -2,6 +2,7 @@ import { claimNextCampaign, claimNextContactStage, requeueInterruptedJobs } from
 import { sleep } from "../util.js";
 import { runCampaignWorker } from "./runCampaign.js";
 import { runContactStage } from "./contactStage.js";
+import { updateContactStageStatus } from "../db/contactResults.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs them one at
 // a time. Run it as its own service (PM2 / systemd), separate from the
@@ -30,8 +31,14 @@ async function runNextJob(): Promise<boolean> {
   if (contactCampaignId) {
     console.log(`[worker] contact stage for campaign ${contactCampaignId}`);
     try {
-      await runContactStage(contactCampaignId);
-      console.log(`[worker] contact stage for campaign ${contactCampaignId} finished`);
+      const outcome = await runContactStage(contactCampaignId);
+      if (outcome === "paused") {
+        // Back in the contact queue; the claim query skips it until Resume.
+        await updateContactStageStatus(contactCampaignId, "queued");
+        console.log(`[worker] contact stage for campaign ${contactCampaignId} paused`);
+      } else {
+        console.log(`[worker] contact stage for campaign ${contactCampaignId} finished`);
+      }
     } catch (err) {
       // runContactStage already marked it failed
       console.error(`[worker] contact stage for campaign ${contactCampaignId} failed:`, err);

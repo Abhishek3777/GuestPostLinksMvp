@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "worker": "tsx src/worker/daemon.ts",
+    "rescue": "tsx src/rescue-blocked.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "discover:test": "tsx src/discovery/test-discover.ts",
     "db:generate": "drizzle-kit generate",
@@ -34,6 +35,7 @@
     "@types/jsdom": "^21.1.7",
     "@types/node": "^20",
     "drizzle-kit": "^0.31.10",
+    "playwright": "^1.63.0",
     "typescript": "^5"
   }
 }

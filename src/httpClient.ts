@@ -3,14 +3,32 @@ import { execFile } from "node:child_process";
 import dns from "node:dns";
 import { promisify } from "node:util";
 import CacheableLookup from "cacheable-lookup";
-import got from "got";
+import got, { type Got } from "got";
 import { HttpProxyAgent, HttpsProxyAgent } from "hpagent";
 import { sleep } from "./util.js";
 
 const execFileAsync = promisify(execFile);
 
-const USER_AGENT = "Mozilla/5.0 (compatible; ACGLinkScout/0.1; +https://acgdigitalmarketing.com)";
-const ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+// Requests look like an ordinary desktop Chrome page load. Firewalls decide who to
+// challenge partly from the request's identity and headers, and a client that announces
+// itself as a crawler (or sends none of the headers a browser always sends) is challenged
+// far more often. The set below is what Chrome sends when you open a page in a new tab,
+// and it says nothing about who is behind it.
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+const BROWSER_HEADERS: Record<string, string> = {
+  accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+  "accept-language": "en-US,en;q=0.9",
+  "upgrade-insecure-requests": "1",
+  "sec-ch-ua": '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+  "sec-fetch-dest": "document",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-site": "none",
+  "sec-fetch-user": "?1",
+};
 
 // --- Optional upstream proxy -------------------------------------------------
 // Off unless PROXY_URL is set. This routes requests through a rotating
@@ -29,10 +47,30 @@ const proxyAgent = PROXY_URL
 export const httpClient = got.extend({
   timeout: { request: 15000 },
   retry: { limit: 1 },
-  headers: { "user-agent": USER_AGENT, accept: ACCEPT, "accept-language": "en-US,en;q=0.9" },
+  headers: { "user-agent": USER_AGENT, ...BROWSER_HEADERS },
   throwHttpErrors: false,
   ...(proxyAgent ? { agent: proxyAgent } : {}),
 });
+
+// --- Broken-certificate retry ---------------------------------------------------
+// A surprising number of small business sites run an expired, self-signed or
+// mismatched TLS certificate. A browser shows a warning you can click through; our
+// strict client just fails, and the site was reported as unreachable although its
+// contact page was sitting there. We only READ a public page (nothing is sent to
+// it), so on a certificate error — and only on that — retry once without
+// certificate checking.
+const CERT_ERROR_CODES = new Set([
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "CERT_HAS_EXPIRED",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+export function isCertError(detail: string | undefined): boolean {
+  return Boolean(detail && CERT_ERROR_CODES.has(detail));
+}
+const httpClientInsecure = httpClient.extend({ https: { rejectUnauthorized: false } });
 
 // --- Public-DNS retry ------------------------------------------------------
 // The local/ISP resolver sometimes says "domain doesn't exist" for domains
@@ -71,7 +109,7 @@ export interface FetchResult {
   failedHost?: string;
   // Set when the request only succeeded because a fallback kicked in, so
   // reports can say so instead of silently hiding which sites need it.
-  usedFallback?: "curl" | "public-dns";
+  usedFallback?: "curl" | "public-dns" | "insecure-tls";
   // From a Retry-After header on 429/503: how long the site asked us to wait.
   retryAfterMs?: number;
 }
@@ -153,7 +191,7 @@ function classifyResponse(status: number, body: string, headers: Record<string, 
   return null;
 }
 
-async function gotFetch(client: typeof httpClient | typeof httpClientPublicDns, url: string): Promise<FetchResult> {
+async function gotFetch(client: Got, url: string): Promise<FetchResult> {
   try {
     const res = await client.get(url);
     const bad = classifyResponse(res.statusCode, res.body, res.headers as Record<string, unknown>);
@@ -199,7 +237,7 @@ const CURL_ELIGIBLE = new Set([
   "http_403_forbidden",
   "http_406_not_acceptable",
 ]);
-const META_MARKER = "\n__ACG_CURL_META__";
+const META_MARKER = "\n__CURL_META__";
 
 async function curlFetch(url: string): Promise<FetchResult | null> {
   try {
@@ -211,8 +249,7 @@ async function curlFetch(url: string): Promise<FetchResult | null> {
       [
         "-sS", "-L", "--max-redirs", "5", "--compressed", "--max-time", "20",
         "-A", USER_AGENT,
-        "-H", `Accept: ${ACCEPT}`,
-        "-H", "Accept-Language: en-US,en;q=0.9",
+        ...Object.entries(BROWSER_HEADERS).flatMap(([name, value]) => ["-H", `${name}: ${value}`]),
         "-w", `${META_MARKER}%{http_code} %{url_effective}`,
         parsed.href,
       ],
@@ -244,10 +281,12 @@ async function curlFetch(url: string): Promise<FetchResult | null> {
 // we don't burn a doomed request per page on a site we know rejects Node.
 const hostsNeedingCurl = new Set<string>();
 const hostsNeedingPublicDns = new Set<string>();
+const hostsNeedingInsecureTls = new Set<string>();
 
 export function fallbackDescription(fallback: FetchResult["usedFallback"]): string | null {
   if (fallback === "curl") return "reachable only via curl fallback (Cloudflare challenges our Node HTTP client)";
   if (fallback === "public-dns") return "reachable only via public-DNS fallback (local resolver failed)";
+  if (fallback === "insecure-tls") return "site has an invalid or expired security certificate (page read anyway)";
   return null;
 }
 
@@ -346,8 +385,18 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
     if (viaCurl?.ok) return { ...viaCurl, usedFallback: "curl" };
   }
 
-  const client = () => (hostsNeedingPublicDns.has(host) ? httpClientPublicDns : httpClient);
+  const client = () =>
+    hostsNeedingInsecureTls.has(host) ? httpClientInsecure : hostsNeedingPublicDns.has(host) ? httpClientPublicDns : httpClient;
   let result = await gotFetch(client(), url);
+
+  if (!result.ok && isCertError(result.failureDetail)) {
+    const retry = await gotFetch(httpClientInsecure, url);
+    if (retry.ok) {
+      hostsNeedingInsecureTls.add(host);
+      return { ...retry, usedFallback: "insecure-tls" };
+    }
+    result = retry;
+  }
 
   if (!result.ok && result.failureDetail === "http_429_rate_limited") {
     result = await backOffAndRetry(host, result, () => gotFetch(client(), url));

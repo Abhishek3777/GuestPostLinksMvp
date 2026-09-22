@@ -1,4 +1,4 @@
-import { fallbackDescription, fetchText } from "../httpClient.js";
+import { fallbackDescription, fetchText, type FetchResult } from "../httpClient.js";
 import {
   CONTACT_FALLBACK_PATHS,
   detectContactForm,
@@ -57,15 +57,19 @@ function looksLikeRealPage(page: { body?: string }): boolean {
   return !/\b404\b|not found|page (does not|doesn't) exist|nothing (was )?found/i.test(title);
 }
 
-export async function findContact(domain: string): Promise<ContactResult> {
-  const bare = await fetchText(`https://${domain}/`);
+// How pages are fetched. The default is the plain HTTP client; the local retry script
+// can pass a real-browser fetcher for sites that challenge plain requests.
+export type Fetcher = (url: string) => Promise<FetchResult>;
+
+export async function findContact(domain: string, fetcher: Fetcher = fetchText): Promise<ContactResult> {
+  const bare = await fetcher(`https://${domain}/`);
   let homepage = bare;
   let triedWww = false;
 
   // Some sites 400/DNS-fail on the bare domain and only resolve under www.
   if (!bare.ok && (bare.errorReason === "dns_error" || bare.errorReason === "error")) {
     triedWww = true;
-    homepage = await fetchText(`https://www.${domain}/`);
+    homepage = await fetcher(`https://www.${domain}/`);
   }
 
   if (!homepage.ok || !homepage.body) {
@@ -101,7 +105,7 @@ export async function findContact(domain: string): Promise<ContactResult> {
   let contactPageReadable = false;
 
   if (contactPageUrl && contactPageUrl !== homepage.url) {
-    const page = await fetchText(contactPageUrl);
+    const page = await fetcher(contactPageUrl);
     if (page.ok && page.body) {
       contactPageReadable = true;
       detected.push(...extractEmailsDetailed(page.body));
@@ -118,7 +122,7 @@ export async function findContact(domain: string): Promise<ContactResult> {
     // site very often still HAS /contact — so ask for the usual addresses.
     for (const path of CONTACT_FALLBACK_PATHS) {
       const url = new URL(path, homeUrl).href;
-      const page = await fetchText(url);
+      const page = await fetcher(url);
       if (!page.ok || !page.body) continue;
       if (bouncedToHomepage(page, url)) break; // a catch-all redirect: the other guesses would bounce too
       if (!looksLikeRealPage(page)) continue;
@@ -141,7 +145,7 @@ export async function findContact(domain: string): Promise<ContactResult> {
     const candidates = findSecondaryPageUrls(homepage.body, homeUrl, domain, 2);
     for (const url of candidates) {
       if (url === homepage.url || url === contactPageUrl) continue;
-      const page = await fetchText(url);
+      const page = await fetcher(url);
       secondaryChecked.push(pathOf(url));
       if (!page.ok || !page.body) continue;
       const found = extractEmailsDetailed(page.body);

@@ -25,8 +25,25 @@ interface Prospect {
   contactFormUrl: string | null;
 }
 
+// Contact-status filters. Each is a plain question about a kept lead, so the chips
+// and their counts always agree with what the table shows.
+type ContactFilter = "has_email" | "has_form" | "both" | "form_only" | "none" | "blocked" | "failed" | "pending";
+
+const CONTACT_FILTERS: { key: ContactFilter; label: string; test: (p: Prospect) => boolean }[] = [
+  { key: "has_email", label: "Has email", test: (p) => Boolean(p.emailAddress) },
+  { key: "has_form", label: "Has contact form", test: (p) => Boolean(p.contactFormUrl) },
+  { key: "both", label: "Email + form", test: (p) => Boolean(p.emailAddress && p.contactFormUrl) },
+  { key: "form_only", label: "Form only (no email)", test: (p) => p.contactStatus === "form_only" },
+  { key: "none", label: "Nothing found", test: (p) => p.contactStatus === "no_contact_found" },
+  { key: "blocked", label: "Blocked", test: (p) => p.contactStatus === "blocked" },
+  { key: "failed", label: "Failed (timeout / DNS / error)", test: (p) => ["timeout", "dns_error", "error"].includes(p.contactStatus) },
+  { key: "pending", label: "Not looked up yet", test: (p) => p.contactStatus === "pending" },
+];
+
 export function ProspectsSection({ prospects, contactStageStarted }: { prospects: Prospect[]; contactStageStarted: boolean }) {
   const [filter, setFilter] = useState<string | null>(null);
+  const [contactFilter, setContactFilter] = useState<ContactFilter | null>(null);
+  const [search, setSearch] = useState("");
 
   const keptCount = prospects.filter((p) => !p.exclusionReason).length;
   const excludedCount = prospects.length - keptCount;
@@ -43,7 +60,18 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
     tone: key === "kept" ? "success" : "warning",
   }));
 
-  const rows = filter ? prospects.filter((p) => (p.exclusionReason ?? "kept") === filter) : prospects;
+  // Counts are over KEPT leads only: an excluded prospect never gets a contact lookup.
+  const kept = prospects.filter((p) => !p.exclusionReason);
+  const contactCounts = new Map(CONTACT_FILTERS.map((f) => [f.key, kept.filter(f.test).length]));
+  const activeContact = CONTACT_FILTERS.find((f) => f.key === contactFilter) ?? null;
+  const needle = search.trim().toLowerCase();
+
+  const rows = prospects.filter((p) => {
+    if (filter && (p.exclusionReason ?? "kept") !== filter) return false;
+    if (activeContact && (p.exclusionReason || !activeContact.test(p))) return false;
+    if (needle && !p.rootDomain.toLowerCase().includes(needle)) return false;
+    return true;
+  });
 
   return (
     <>
@@ -59,6 +87,45 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
           Prospects ({keptCount} kept · {excludedCount} excluded)
           {filter && <span className="normal-case text-accent"> — filtered: {filter === "kept" ? "kept" : REASON_LABEL[filter] ?? filter}</span>}
         </h2>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {contactStageStarted ? (
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setContactFilter(null)}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  !contactFilter ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:text-text"
+                }`}
+              >
+                All contact results
+              </button>
+              {CONTACT_FILTERS.filter((f) => (contactCounts.get(f.key) ?? 0) > 0).map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setContactFilter((cur) => (cur === f.key ? null : f.key))}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                    contactFilter === f.key ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:text-text"
+                  }`}
+                >
+                  {f.label} · {contactCounts.get(f.key)}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span />
+          )}
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search domain"
+            className="w-56 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
+          />
+        </div>
+        {(contactFilter || needle) && (
+          <p className="text-xs text-muted">
+            Showing {rows.length} of {prospects.length}. Filters only change this view — Export still includes everything.
+          </p>
+        )}
         <div className="overflow-hidden rounded-xl border border-border bg-surface">
           <table className="w-full text-sm">
             <thead>

@@ -1,7 +1,8 @@
 import robotsParser, { Robot } from "robots-parser";
 import { fetchText } from "./httpClient.js";
 
-const USER_AGENT = "ACGLinkScout";
+// Only used to pick which robots.txt group applies; it is never sent to a site.
+const USER_AGENT = "Mozilla";
 
 export interface RobotsGate {
   isAllowed: (url: string) => boolean;

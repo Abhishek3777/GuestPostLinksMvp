@@ -4,10 +4,13 @@ import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react
 import { getCampaignDetail } from "@/services/campaigns.service";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
-import { ProportionBar, type Segment } from "@/components/ProportionBar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { ExportMenu } from "@/components/ExportMenu";
 import { RunContactStageButton } from "@/components/RunContactStageButton";
+import { PauseResumeButton } from "@/components/PauseResumeButton";
+import { ContactDashboard } from "@/components/ContactDashboard";
+import { RetryFailedButton } from "@/components/RetryFailedButton";
+import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 import { DomainStatusSection } from "@/components/DomainStatusSection";
 import { ProspectsSection } from "@/components/ProspectsSection";
 
@@ -19,24 +22,20 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
   if (!detail) notFound();
 
   const { campaign, domainStatuses, links, prospects, totalDomains } = detail;
-  const isLive =
-    campaign.status === "queued" ||
-    campaign.status === "running" ||
-    campaign.contactStageStatus === "queued" ||
-    campaign.contactStageStatus === "running";
+  // Keep refreshing while work is happening (including "pausing"), but not once it
+  // is parked — a paused campaign sits still until someone resumes it.
+  const shownStatus = displayStatus(campaign);
+  const isLive = isActive(campaign) && shownStatus !== "paused";
+  const pauseAction = canPauseOrResume(campaign);
+  const retryableCount = prospects.filter(
+    (p) => !p.exclusionReason && ["blocked", "timeout", "dns_error", "error"].includes(p.contactStatus)
+  ).length;
+  const canRetry = !isActive(campaign) && campaign.status === "completed" && retryableCount > 0;
   const successCount = domainStatuses.filter((d) => d.status === "success").length;
   const blockedCount = domainStatuses.filter((d) => d.status === "blocked").length;
 
   const keptProspects = prospects.filter((p) => !p.exclusionReason);
   const contactChecked = keptProspects.filter((p) => p.contactCheckedAt);
-  const withEmail = contactChecked.filter((p) => p.contactStatus === "has_email").length;
-  const formOnly = contactChecked.filter((p) => p.contactStatus === "form_only").length;
-  const noContact = contactChecked.filter((p) => p.contactStatus === "no_contact_found").length;
-  const contactSegments: Segment[] = [
-    { key: "has_email", label: "has email", value: withEmail, tone: "success" },
-    { key: "form_only", label: "form only", value: formOnly, tone: "info" },
-    { key: "no_contact_found", label: "no contact found", value: noContact, tone: "neutral" },
-  ];
 
   const canRunContactStage =
     campaign.mode === "discovery" && campaign.status === "completed" && campaign.contactStageStatus === "not_started";
@@ -53,12 +52,14 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold tracking-tight text-text">{campaign.name}</h1>
-            <StatusBadge status={campaign.status} />
+            <StatusBadge status={shownStatus} />
             {campaign.mode === "direct" && (
               <span className="rounded-full bg-info-soft px-2.5 py-1 text-xs font-medium text-info">direct</span>
             )}
           </div>
           <div className="flex items-center gap-2">
+            {pauseAction && <PauseResumeButton campaignId={campaign.id} action={pauseAction} />}
+            {canRetry && <RetryFailedButton campaignId={campaign.id} count={retryableCount} />}
             {canRunContactStage && keptProspects.length > 0 && <RunContactStageButton campaignId={campaign.id} />}
             {(prospects.length > 0 || domainStatuses.length > 0) && (
               <>
@@ -86,23 +87,14 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
       <DomainStatusSection domainStatuses={domainStatuses} isLive={isLive} />
 
-      {prospects.length > 0 && <ProspectsSection prospects={prospects} contactStageStarted={contactStageStarted} />}
-
       {contactStageStarted && (
-        <div>
-          <div className="mb-3 flex items-center gap-2">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Stage 3 · Contact</h2>
-            <StatusBadge status={campaign.contactStageStatus} />
-          </div>
-          {contactChecked.length > 0 ? (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <ProportionBar segments={contactSegments} />
-            </div>
-          ) : (
-            <p className="text-sm text-muted">Waiting for results…</p>
-          )}
-        </div>
+        <ContactDashboard
+          prospects={prospects}
+          stageStatus={campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus}
+        />
       )}
+
+      {prospects.length > 0 && <ProspectsSection prospects={prospects} contactStageStarted={contactStageStarted} />}
 
       {prospects.length === 0 && domainStatuses.length === 0 && (
         <p className="py-10 text-center text-sm text-muted">
