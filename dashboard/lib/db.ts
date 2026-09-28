@@ -16,6 +16,9 @@ const client =
     prepare: false,
     ssl: "require",
     max: 10,
+    // This DB is shared with ORR (dev project) — our tables live in their own
+    // "guestpost" schema, not "public", so they never collide with ORR's own.
+    connection: { search_path: "guestpost" },
   });
 
 if (process.env.NODE_ENV !== "production") {

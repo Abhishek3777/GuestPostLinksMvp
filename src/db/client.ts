@@ -12,6 +12,9 @@ const client = postgres(connectionString, {
   // Supabase requires TLS. DATABASE_SSL=disable exists only so the worker can be
   // tested against a plain local Postgres.
   ssl: process.env.DATABASE_SSL === "disable" ? false : "require",
+  // This DB is shared with ORR (dev project) — our tables live in their own
+  // "guestpost" schema, not "public", so they never collide with ORR's own.
+  connection: { search_path: "guestpost" },
 });
 
 export const db = drizzle(client, { schema });
