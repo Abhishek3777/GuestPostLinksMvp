@@ -2,51 +2,79 @@
 
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
-import { UploadCloud, Loader2 } from "lucide-react";
+import { Loader2, Plus, UploadCloud } from "lucide-react";
 
 export function DncUploadForm() {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
-  async function handleFile(file: File | undefined | null) {
-    if (!file) return;
-    setSubmitting(true);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!text.trim() && !file) return;
+    setBusy(true);
     setMessage(null);
 
     const formData = new FormData();
-    formData.set("domainsFile", file);
+    if (text.trim()) formData.set("domainsText", text);
+    if (file) formData.set("domainsFile", file);
     const res = await fetch("/api/do-not-contact", { method: "POST", body: formData });
     const data = await res.json().catch(() => ({}));
+    setBusy(false);
 
-    setSubmitting(false);
     if (!res.ok) {
-      setMessage(data.error ?? "Something went wrong");
+      setMessage({ tone: "error", text: data.error ?? "Something went wrong" });
       return;
     }
-    setMessage(`Added ${data.added} domain(s)`);
+    setMessage({ tone: "ok", text: `Added ${data.added} domain(s)` });
+    setText("");
+    setFile(null);
+    if (fileRef.current) fileRef.current.value = "";
     router.refresh();
-    if (inputRef.current) inputRef.current.value = "";
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <label
-        onClick={() => inputRef.current?.click()}
-        className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-medium text-text transition-colors hover:bg-surface-2"
-      >
-        {submitting ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />}
-        {submitting ? "Uploading…" : "Upload CSV"}
-      </label>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".csv,.txt,.xlsx"
-        className="hidden"
-        onChange={(e) => handleFile(e.target.files?.[0])}
+    <form onSubmit={submit} className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
+      <div className="text-sm font-medium text-text">Add to Do Not Contact</div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        spellCheck={false}
+        placeholder={"example.com\nanother-site.org\n(one per line — full URLs and www. are cleaned up)"}
+        className="rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
       />
-      {message && <p className="text-xs text-muted">{message}</p>}
-    </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="submit"
+          disabled={busy || (!text.trim() && !file)}
+          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          {busy ? "Adding…" : "Add to list"}
+        </button>
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text transition-colors hover:bg-surface-2"
+        >
+          <UploadCloud size={14} />
+          {file ? file.name : "Upload .csv / .xlsx"}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,.txt,.xlsx"
+          className="hidden"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
+        {message && (
+          <span className={`text-xs ${message.tone === "error" ? "text-danger" : "text-muted"}`}>{message.text}</span>
+        )}
+      </div>
+    </form>
   );
 }

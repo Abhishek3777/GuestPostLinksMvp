@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
-import { readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
+import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
 import { addDoNotContactDomains } from "@/services/doNotContact.service";
 
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
     const file = formData.get("domainsFile") as File | null;
-    if (!file) return NextResponse.json({ error: "A CSV, TXT or Excel file is required" }, { status: 400 });
+    const text = String(formData.get("domainsText") ?? "").trim();
+    if (!file && !text) return NextResponse.json({ error: "Type a domain or upload a CSV, TXT or Excel file" }, { status: 400 });
 
-    const domains = await readDomainsFromFile(file);
+    const fromFile = file ? await readDomainsFromFile(file) : [];
+    const fromText = text ? domainsFromText(text) : [];
+    const domains = [...new Set([...fromFile, ...fromText])];
     if (domains.length === 0) {
-      return NextResponse.json({ error: "No valid domains were found in that file." }, { status: 400 });
+      return NextResponse.json({ error: "No valid domains were found." }, { status: 400 });
     }
     const added = await addDoNotContactDomains(domains);
 
