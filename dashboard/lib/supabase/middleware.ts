@@ -9,7 +9,15 @@ import { NextResponse, type NextRequest } from "next/server";
  *     internal single-team tool, any authenticated user gets full access.
  */
 
-const AUTH_PAGES = ["/login"];
+// Reachable with no session at all — /login, and the two invite-link
+// destinations (an invite lands here with NO session yet; that's the point).
+const PUBLIC_PAGES = ["/login", "/auth/confirm", "/set-password"];
+// Of those, only /login should bounce an ALREADY-logged-in visitor away — a
+// signed-in admin poking at /set-password is fine to let through (they'd just
+// see the form), and bouncing them mid-flow right after /auth/confirm just
+// established their session would strand a brand-new invitee before they can
+// ever set a password.
+const REDIRECT_IF_LOGGED_IN = ["/login"];
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -36,16 +44,16 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
-  const isAuthPage = AUTH_PAGES.some((p) => pathname.startsWith(p));
+  const isPublicPage = PUBLIC_PAGES.some((p) => pathname.startsWith(p));
 
-  if (!isAuthPage && !user) {
+  if (!isPublicPage && !user) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("redirect", pathname + request.nextUrl.search);
     return NextResponse.redirect(url);
   }
 
-  if (isAuthPage && user) {
+  if (REDIRECT_IF_LOGGED_IN.some((p) => pathname.startsWith(p)) && user) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     url.search = "";

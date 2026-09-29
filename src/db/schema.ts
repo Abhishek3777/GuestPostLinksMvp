@@ -48,6 +48,35 @@ export const contactStatus = pgEnum("contact_status", [
   "error",
 ]);
 
+export const userRole = pgEnum("user_role", ["admin", "member"]);
+
+/* ---------------------------------------------------------------------------
+ * groups — admin-managed teams. A member's group is who they compete with for
+ * leads: see the dedup note on guestPostProspects further down.
+ * ------------------------------------------------------------------------- */
+
+export const groups = pgTable("groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+/* ---------------------------------------------------------------------------
+ * profiles — one row per dashboard user. `id` is the Supabase auth user's
+ * UUID, copied over (not a DB foreign key: auth lives in a different Supabase
+ * project than this one, so there is no `auth.users` table to reference here).
+ * ------------------------------------------------------------------------- */
+
+export const profiles = pgTable("profiles", {
+  id: uuid("id").primaryKey(),
+  email: text("email").notNull(),
+  role: userRole("role").notNull().default("member"),
+  // One group at a time, optional. Admins are never in a group — they already
+  // see and can act on every campaign regardless.
+  groupId: uuid("group_id").references(() => groups.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
 /* ---------------------------------------------------------------------------
  * campaigns — one row per crawl run. Holds the settings the run was fired
  * with, so results stay traceable to how they were produced.
@@ -56,6 +85,10 @@ export const contactStatus = pgEnum("contact_status", [
 export const campaigns = pgTable("campaigns", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  // Who started it — an admin sees every campaign, a member only their own.
+  // Nullable: campaigns created before RBAC existed have no owner and are
+  // admin-only until claimed.
+  createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
   mode: campaignMode("mode").notNull().default("discovery"),
   // For "discovery" campaigns: keep going into Stage 3 (contact lookup) on the
   // kept prospects right after Stage 1+2, so one run goes domains -> contacts.
@@ -217,6 +250,13 @@ export const processedPosts = pgTable(
  * campaign with 50 links to the same domain still produces exactly one
  * prospect row here — that row is what Stage 3 (contact scraping) will
  * eventually work from.
+ *
+ * Group dedup: the FIRST group-mate whose campaign keeps a given rootDomain
+ * here (exclusionReason still null) "claims" it. Any other CURRENT member of
+ * the same group whose filter stage later sees that same rootDomain excludes
+ * it (reason "claimed_by_teammate") instead of creating a second kept row —
+ * see findClaimedByGroupmates in src/db/filterResults.ts. Members in
+ * different groups (or no group) never block each other this way.
  * ------------------------------------------------------------------------- */
 
 export const guestPostProspects = pgTable(

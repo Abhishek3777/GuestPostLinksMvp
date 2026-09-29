@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Link2, LayoutGrid, Plus, Radar, ShieldOff, Mail } from "lucide-react";
+import { Link2, LayoutGrid, Plus, Radar, ShieldOff, Mail, Users } from "lucide-react";
+import type { Role } from "@/lib/auth";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 
@@ -18,8 +19,14 @@ const NAV = [
   { href: "/do-not-contact", label: "Do Not Contact", icon: ShieldOff, exact: true },
 ];
 
-export function Sidebar({ email }: { email: string }) {
+// Admin-only: the Team page (member list + group management). Invite is
+// still off within that page — accounts are seeded directly for now
+// (dashboard/scripts/bootstrap-admin.mjs).
+const ADMIN_NAV = [{ href: "/team", label: "Team", icon: Users, exact: true }];
+
+export function Sidebar({ email, role }: { email: string; role: Role }) {
   const pathname = usePathname();
+  const nav = role === "admin" ? [...NAV, ...ADMIN_NAV] : NAV;
 
   return (
     <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-border bg-surface">
@@ -31,7 +38,7 @@ export function Sidebar({ email }: { email: string }) {
       </div>
 
       <nav className="flex flex-col gap-1 px-3">
-        {NAV.map(({ href, label, icon: Icon, exact }) => {
+        {nav.map(({ href, label, icon: Icon, exact }) => {
           const hrefPath = href.split("?")[0];
           const active = exact ? pathname === hrefPath : pathname.startsWith(hrefPath);
           return (

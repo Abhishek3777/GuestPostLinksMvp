@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { getCampaignDetail } from "@/services/campaigns.service";
+import { getCurrentUser } from "@/lib/auth";
+import { canAccessCampaign } from "@/lib/campaignAccess";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
 import { AutoRefresh } from "@/components/AutoRefresh";
@@ -18,6 +20,9 @@ export const dynamic = "force-dynamic";
 
 export default async function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const user = await getCurrentUser();
+  if (!user || !(await canAccessCampaign(id, user))) notFound();
+
   const detail = await getCampaignDetail(id);
   if (!detail) notFound();
 

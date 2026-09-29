@@ -1,9 +1,10 @@
 import pLimit from "p-limit";
-import { crawlDomain } from "../pipeline.js";
+import { crawlDomain, type CrawlDomainOptions } from "../pipeline.js";
 import { runFilterStage, seedDirectProspects } from "../filter/index.js";
 import { runContactStage } from "./contactStage.js";
 import { makePauseCheck } from "./pauseCheck.js";
 import { updateContactStageStatus } from "../db/contactResults.js";
+import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
 import {
   getCampaign,
   getCampaignDomains,
@@ -12,6 +13,25 @@ import {
   saveCrawlResult,
   updateCampaignStatus,
 } from "../db/writeResults.js";
+
+// A domain the plain HTTP client found "blocked" gets one more try from here,
+// through a real browser and (if that's still not enough) CapSolver — same
+// escalation the local rescue-domains.ts script does by hand, just automatic
+// now. Most domains never reach this at all.
+async function withBlockedEscalation(domain: string, opts: CrawlDomainOptions) {
+  const plain = await crawlDomain(domain, opts);
+  if (plain.discoveryStatus !== "blocked") return plain;
+
+  return browserLimit(async () => {
+    const browser = await getBrowserFetcher();
+    const viaBrowser = await crawlDomain(domain, { ...opts, fetcher: browser.fetch });
+    if (viaBrowser.discoveryStatus !== "blocked") return viaBrowser;
+
+    const capsolver = getCapsolverFetcher();
+    if (!capsolver) return viaBrowser;
+    return crawlDomain(domain, { ...opts, fetcher: (await capsolver).fetch });
+  });
+}
 
 // How many DIFFERENT domains are crawled at once (default 5, the spec's 5-10). The
 // per-host rate limit in httpClient.ts keeps each individual site at one request
@@ -86,7 +106,7 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
             // One bad domain must never sink the whole campaign: whatever goes
             // wrong here is recorded as THAT domain's result and the rest carry on.
             try {
-              const result = await crawlDomain(domain, {
+              const result = await withBlockedEscalation(domain, {
                 targetPostCount: campaign.targetPostCount,
                 days: campaign.daysWindow ?? undefined,
                 skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,

@@ -56,17 +56,18 @@ async function solveTurnstile(apiKey: string, websiteURL: string, websiteKey: st
   return null;
 }
 
-export async function createCapsolverFetcher(apiKey: string): Promise<CapsolverFetcher> {
+// proxyEnvVar: see createBrowserFetcher in browserFetcher.ts — same reasoning.
+export async function createCapsolverFetcher(apiKey: string, proxyEnvVar = "PROXY_URL"): Promise<CapsolverFetcher> {
   let chromium: typeof import("playwright").chromium;
   try {
     ({ chromium } = await import("playwright"));
   } catch {
     throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
   }
-  // Same PROXY_URL httpClient.ts uses for plain requests. CapSolver's own solve
-  // step is "proxyless" (it solves the challenge server-side, not through this
-  // proxy) — this only affects which IP the page itself is loaded from.
-  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy() });
+  // CapSolver's own solve step is "proxyless" (it solves the challenge
+  // server-side, not through this proxy) — this only affects which IP the
+  // page itself is loaded from.
+  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy(proxyEnvVar) });
 
   async function fetchPage(url: string): Promise<FetchResult> {
     await sleep(1000);

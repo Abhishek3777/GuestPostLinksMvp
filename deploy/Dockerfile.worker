@@ -21,6 +21,12 @@ COPY package.json package-lock.json ./
 # tsx (which runs the worker) is a regular dependency, so --omit=dev is safe.
 RUN npm ci --omit=dev
 
+# Chromium for the browser/CapSolver rescue escalation (src/rescueFetchers.ts) —
+# only reached for domains the plain HTTP client already found blocked, not
+# the default path. --with-deps pulls in the apt packages Chromium itself
+# needs (libnss3, libatk, etc.) that this slim base image doesn't have.
+RUN npx playwright install --with-deps chromium
+
 COPY tsconfig.json ./
 COPY src src
 

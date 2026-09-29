@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
 import { createCampaign } from "@/services/campaigns.service";
+import { getCurrentUser } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+
     const formData = await req.formData();
 
     const name = String(formData.get("name") ?? "").trim();
@@ -39,7 +43,7 @@ export async function POST(req: Request) {
     // for the full pipeline — Contact Lookup always goes straight to contacts.
     const autoContact = formData.get("autoContact") === "on";
 
-    const campaignId = await createCampaign({ name, mode, autoContact, daysWindow, targetPostCount, domains });
+    const campaignId = await createCampaign({ name, mode, autoContact, daysWindow, targetPostCount, domains, createdBy: user.id });
 
     return NextResponse.json({ campaignId, domainCount: domains.length });
   } catch (err) {

@@ -2,8 +2,13 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects } from "@/lib/schema";
 
-export async function listCampaigns() {
-  const allCampaigns = await db.select().from(campaigns).orderBy(desc(campaigns.createdAt));
+// undefined userId (admin) = every campaign. Otherwise, only ones they started.
+export async function listCampaigns(userId?: string) {
+  const allCampaigns = await db
+    .select()
+    .from(campaigns)
+    .where(userId ? eq(campaigns.createdBy, userId) : undefined)
+    .orderBy(desc(campaigns.createdAt));
 
   const [domainCounts, statusCounts, linkCounts, keptProspectCounts] = await Promise.all([
     db
@@ -74,6 +79,7 @@ export async function createCampaign(opts: {
   daysWindow?: number;
   targetPostCount: number;
   domains: string[];
+  createdBy?: string;
 }) {
   const [row] = await db
     .insert(campaigns)
@@ -84,6 +90,7 @@ export async function createCampaign(opts: {
       incremental: opts.mode === "discovery" && Boolean(opts.incremental),
       daysWindow: opts.daysWindow,
       targetPostCount: opts.targetPostCount,
+      createdBy: opts.createdBy,
     })
     .returning({ id: campaigns.id });
 

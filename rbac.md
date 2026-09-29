@@ -9,3 +9,5 @@ I can come up with this only for now, if any new ideas or rights we shud impleme
 
 Secondly, I believe we dont use playwright in the app not in the server but locally right to push numbers up? Now please wire playwright properly in code so playwright works in server as well, so that those retries we do in local after a campaign ends we need not do locally, data impulse also I'll add in server so make sure proxy + playwright + captcha(if needed genuinely all is wired). 
 Kindly start implementing these, if any doubts ask me, dont assume and hallucinate, build cleanly and professionally. 
+
+12. Email invite

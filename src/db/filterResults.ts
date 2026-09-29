@@ -1,6 +1,6 @@
 import { and, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "./client.js";
-import { doNotContact, guestPostLinks, guestPostProspects } from "./schema.js";
+import { campaigns, doNotContact, guestPostLinks, guestPostProspects, profiles } from "./schema.js";
 
 export async function loadDoNotContactSet(): Promise<Set<string>> {
   const rows = await db.select({ domain: doNotContact.domain }).from(doNotContact);
@@ -46,6 +46,43 @@ export async function findAlreadyFoundDomains(campaignId: string, domains: strin
     for (const r of rows) found.add(r.rootDomain);
   }
   return found;
+}
+
+// Domains a CURRENT group-mate's campaign has already kept (not excluded) as
+// a prospect — regardless of whether contact lookup has even run on it yet.
+// First campaign to reach this stage claims the domain; every other
+// group-mate's campaign, this run or any later one, excludes it instead.
+// Members with no group (or the whole campaign's owner having no group) never
+// dedupe against anyone this way — see the note on guestPostProspects in
+// schema.ts.
+export async function findClaimedByGroupmates(campaignId: string, domains: string[]): Promise<Set<string>> {
+  if (domains.length === 0) return new Set();
+
+  const [owner] = await db
+    .select({ groupId: profiles.groupId })
+    .from(campaigns)
+    .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
+    .where(eq(campaigns.id, campaignId));
+  if (!owner?.groupId) return new Set();
+
+  const claimed = new Set<string>();
+  for (let i = 0; i < domains.length; i += 5000) {
+    const rows = await db
+      .selectDistinct({ rootDomain: guestPostProspects.rootDomain })
+      .from(guestPostProspects)
+      .innerJoin(campaigns, eq(campaigns.id, guestPostProspects.campaignId))
+      .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
+      .where(
+        and(
+          eq(profiles.groupId, owner.groupId),
+          ne(guestPostProspects.campaignId, campaignId),
+          isNull(guestPostProspects.exclusionReason),
+          inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
+        )
+      );
+    for (const r of rows) claimed.add(r.rootDomain);
+  }
+  return claimed;
 }
 
 export interface ProspectInput {

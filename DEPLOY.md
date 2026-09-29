@@ -15,6 +15,16 @@ path" at the matching `railway.*.json`.
 **worker**
 - `DATABASE_URL` — required (Supabase pooler, port 6543)
 - optional: `PROXY_URL`, `MIN_HOST_INTERVAL_MS`, `CRAWL_CONCURRENCY`, `CONTACT_CONCURRENCY`, `POLL_INTERVAL_MS` (see `.env.example`)
+- optional, for the blocked-domain escalation (src/rescueFetchers.ts — a real
+  browser, then CapSolver, tried automatically only for a domain the plain
+  HTTP client already found blocked): `CAPSOLVER_API_KEY`, `RESCUE_PROXY_URL`.
+  **Deliberately a different variable from `PROXY_URL`** — that one applies to
+  every plain request, this one only to the escalation path, so routine
+  traffic doesn't burn proxy quota it doesn't need.
+  Needs the service to have real memory headroom: Chromium alone typically
+  wants 300–500MB, on top of whatever the rest of the worker already uses —
+  check the service's resource limit on Railway (Settings) isn't still at a
+  small default before relying on this.
 
 **dashboard**
 - `DATABASE_URL` — required

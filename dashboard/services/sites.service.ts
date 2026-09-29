@@ -147,7 +147,7 @@ export type RunResult =
 // contact lookup automatically) and stamps each site with that run. From the
 // second run on it only reads posts newer than the oldest last-run among the
 // active sites, so results are new backlinks, not the same ones again.
-export async function runActiveSites(name?: string): Promise<RunResult> {
+export async function runActiveSites(name?: string, createdBy?: string): Promise<RunResult> {
   // One monitoring run at a time: a double click, or a second person clicking
   // while the first run is still going, must not queue the same sites twice.
   const busy = await db
@@ -188,6 +188,7 @@ export async function runActiveSites(name?: string): Promise<RunResult> {
     daysWindow,
     targetPostCount: MONITOR_TARGET_POSTS,
     domains: active.map((s) => s.domain),
+    createdBy,
   });
 
   await db

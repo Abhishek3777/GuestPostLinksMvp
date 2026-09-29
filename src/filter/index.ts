@@ -1,5 +1,6 @@
 import {
   findAlreadyFoundDomains,
+  findClaimedByGroupmates,
   getCampaignLinks,
   loadDoNotContactSet,
   saveProspects,
@@ -30,12 +31,19 @@ async function filterAndSave(
   const alreadyFound = opts.incremental
     ? await findAlreadyFoundDomains(campaignId, candidates.map((c) => c.rootDomain))
     : new Set<string>();
+  // Every run, not just monitoring: a domain a CURRENT group-mate's campaign
+  // already claimed, whether or not contact lookup has even run on it yet.
+  const claimedByGroupmates = await findClaimedByGroupmates(campaignId, candidates.map((c) => c.rootDomain));
 
   const byReason: Record<string, number> = {};
   const prospects: ProspectInput[] = candidates.map((c) => {
-    // The real exclusion rules (do-not-contact, big brands...) always win; only a
-    // domain that would otherwise be kept can be "already found".
-    const reason = exclusionReason(c.rootDomain, doNotContact) || (alreadyFound.has(c.rootDomain) ? "already_found" : "");
+    // The real exclusion rules (do-not-contact, big brands...) always win, then a
+    // teammate's claim (checked before contact lookup wastes effort on it), then
+    // "already found" by an older, unrelated campaign.
+    const reason =
+      exclusionReason(c.rootDomain, doNotContact) ||
+      (claimedByGroupmates.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
+      (alreadyFound.has(c.rootDomain) ? "already_found" : "");
     if (reason) byReason[reason] = (byReason[reason] ?? 0) + 1;
     return { ...c, exclusionReason: reason || null };
   });

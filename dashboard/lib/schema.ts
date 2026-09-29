@@ -38,9 +38,26 @@ export const contactStatus = pgEnum("contact_status", [
   "error",
 ]);
 
+export const userRole = pgEnum("user_role", ["admin", "member"]);
+
+export const groups = pgTable("groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const profiles = pgTable("profiles", {
+  id: uuid("id").primaryKey(),
+  email: text("email").notNull(),
+  role: userRole("role").notNull().default("member"),
+  groupId: uuid("group_id").references(() => groups.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const campaigns = pgTable("campaigns", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
   mode: campaignMode("mode").notNull().default("discovery"),
   autoContact: boolean("auto_contact").notNull().default(false),
   incremental: boolean("incremental").notNull().default(false),

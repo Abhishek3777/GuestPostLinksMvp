@@ -10,6 +10,7 @@ import {
 import { loadDoNotContactSet } from "../db/filterResults.js";
 import { destinationExclusion } from "../contact/destination.js";
 import { makePauseCheck } from "./pauseCheck.js";
+import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
 
 // Pure HTTP, lighter per-request than the crawler — no article parsing. Default 8.
 const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
@@ -19,13 +20,34 @@ const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
 // A timeout or a dropped connection is very often momentary (a busy shared host, a
 // blip). In the first real retry of failures, 5 of 8 of them succeeded the second time,
 // so try once more after a short pause before writing the site off. Blocks are NOT
-// retried straight away: hammering a site that just refused us only makes it worse.
+// retried straight away: hammering a site that just refused us only makes it worse —
+// this is the plain-HTTP retry; a real block still only escalates to a browser once,
+// below, never repeated.
 const RETRY_ONCE = new Set<string>(["timeout", "error"]);
 async function lookupWithRetry(domain: string): Promise<ContactResult> {
   const first = await findContact(domain);
-  if (!RETRY_ONCE.has(first.status)) return first;
-  await sleep(4000);
-  return findContact(domain);
+  if (RETRY_ONCE.has(first.status)) {
+    await sleep(4000);
+    const second = await findContact(domain);
+    if (second.status !== "blocked") return second;
+  } else if (first.status !== "blocked") {
+    return first;
+  }
+
+  // Blocked (on the first try, or still after the timeout/error retry): one
+  // escalation pass through a real browser, then CapSolver if that specific
+  // wall is an actual solvable captcha. Same as the local rescue-contacts.ts
+  // script, just automatic and one-shot — no repeated hammering of a site
+  // that already said no.
+  return browserLimit(async () => {
+    const browser = await getBrowserFetcher();
+    const viaBrowser = await findContact(domain, browser.fetch);
+    if (viaBrowser.status !== "blocked") return viaBrowser;
+
+    const capsolver = getCapsolverFetcher();
+    if (!capsolver) return viaBrowser;
+    return findContact(domain, (await capsolver).fetch);
+  });
 }
 
 // "paused" = the Pause button was pressed part-way: sites already in flight were

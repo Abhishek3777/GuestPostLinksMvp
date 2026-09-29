@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeProvider } from "@/components/theme-provider";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -23,10 +23,7 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   // Read the session on the server so the shell only appears for signed-in
   // users. Logged-out visitors (the /login page) get the bare page.
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
   return (
     <html
@@ -38,7 +35,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
         <ThemeProvider>
           {user ? (
             <>
-              <Sidebar email={user.email ?? "Signed in"} />
+              <Sidebar email={user.email || "Signed in"} role={user.role} />
               <div className="flex-1 overflow-y-auto">
                 <main className="mx-auto w-full max-w-6xl px-8 py-8">{children}</main>
               </div>

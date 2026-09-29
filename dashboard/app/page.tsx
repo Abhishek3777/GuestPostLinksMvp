@@ -1,16 +1,20 @@
 import Link from "next/link";
 import { FolderKanban, ShieldCheck, Loader2, ArrowRight } from "lucide-react";
+import { redirect } from "next/navigation";
 import { listCampaigns } from "@/services/campaigns.service";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
 import { ExportMenu } from "@/components/ExportMenu";
 import { PauseResumeButton } from "@/components/PauseResumeButton";
 import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
+import { getCurrentUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function CampaignsPage() {
-  const campaigns = await listCampaigns();
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const campaigns = await listCampaigns(user.role === "admin" ? undefined : user.id);
 
   const totalProspects = campaigns.reduce((sum, c) => sum + c.keptProspects, 0);
   // A campaign parked by Pause is not "running now".

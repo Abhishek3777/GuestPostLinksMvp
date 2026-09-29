@@ -3,6 +3,7 @@ import { sleep } from "../util.js";
 import { runCampaignWorker } from "./runCampaign.js";
 import { runContactStage } from "./contactStage.js";
 import { updateContactStageStatus } from "../db/contactResults.js";
+import { closeRescueFetchers } from "../rescueFetchers.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs them one at
 // a time. Run it as its own service (PM2 / systemd), separate from the
@@ -22,7 +23,10 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 5000;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     console.log(`${signal} received — exiting; any running job is resumed on next start`);
-    process.exit(0);
+    // Best-effort: closes Chromium if the blocked-domain escalation ever
+    // launched it this process's lifetime. Capped wait so a stuck browser
+    // can never block the shutdown Railway is waiting for.
+    void Promise.race([closeRescueFetchers(), sleep(3000)]).finally(() => process.exit(0));
   });
 }
 

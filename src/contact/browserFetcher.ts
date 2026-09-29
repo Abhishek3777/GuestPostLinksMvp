@@ -7,9 +7,10 @@ import { playwrightProxy, sleep } from "../util.js";
 // passes by itself — in a test on blocked sites a browser opened 4 of 7 SiteGround sites
 // that plain requests never got past.
 //
-// It is deliberately NOT used by the deployed worker: a browser needs a lot more memory
-// than the rest of the app. It is used by the local retry script (`npm run rescue --
-// file --browser`) and Playwright is a development-only dependency for that reason.
+// Used both by local one-off rescue scripts (rescue-domains.ts, rescue-contacts.ts,
+// rescue-blocked.ts) and by the deployed worker's automatic escalation
+// (src/rescueFetchers.ts), which only reaches this for a domain the plain
+// HTTP client already found blocked — not the default path for every domain.
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -22,17 +23,17 @@ export interface BrowserFetcher {
   close: () => Promise<void>;
 }
 
-export async function createBrowserFetcher(): Promise<BrowserFetcher> {
+// proxyEnvVar: which env var to read for the proxy (see util.ts's
+// playwrightProxy) — local scripts want their own .env's PROXY_URL, the
+// worker's automatic escalation wants the separately-scoped RESCUE_PROXY_URL.
+export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<BrowserFetcher> {
   let chromium: typeof import("playwright").chromium;
   try {
     ({ chromium } = await import("playwright"));
   } catch {
     throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
   }
-  // Same PROXY_URL httpClient.ts uses for plain requests — an anti-bot wall a
-  // browser gets past on its own doesn't need a proxy, but sites that also rate-limit
-  // by IP still benefit from spreading the rescue pass across DataImpulse's pool.
-  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy() });
+  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy(proxyEnvVar) });
 
   async function fetchPage(url: string): Promise<FetchResult> {
     await sleep(1000); // never hit a site back-to-back
