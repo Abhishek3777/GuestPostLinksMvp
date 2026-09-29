@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Pause, Play, Rocket, Search } from "lucide-react";
+import { Loader2, Rocket, Search } from "lucide-react";
 
 const FILTERS = [
   { value: "all", label: "All" },
@@ -72,45 +72,6 @@ export function SitesFilters({ counts }: { counts: { all: number; active: number
   );
 }
 
-// Activate / pause everything the list is currently showing (its search + filter,
-// across all pages — not just the rows on screen).
-export function SitesBulkActions({ visibleCount }: { visibleCount: number }) {
-  const router = useRouter();
-  const params = useSearchParams();
-  const [busy, setBusy] = useState<"on" | "off" | null>(null);
-
-  async function bulk(active: boolean) {
-    const q = params.get("q") ?? "";
-    const filter = params.get("filter") ?? "all";
-    const scope =
-      q || filter !== "all"
-        ? `the ${visibleCount.toLocaleString()} sites matching this view`
-        : `all ${visibleCount.toLocaleString()} sites`;
-    if (!confirm(`${active ? "Activate" : "Pause"} ${scope}?`)) return;
-    setBusy(active ? "on" : "off");
-    await fetch("/api/sites", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ active, q, filter }),
-    });
-    setBusy(null);
-    router.refresh();
-  }
-
-  const btn =
-    "flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-surface-2 disabled:opacity-50";
-  return (
-    <div className="flex gap-2">
-      <button className={btn} disabled={busy !== null || visibleCount === 0} onClick={() => bulk(true)}>
-        {busy === "on" ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Activate shown
-      </button>
-      <button className={btn} disabled={busy !== null || visibleCount === 0} onClick={() => bulk(false)}>
-        {busy === "off" ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} Pause shown
-      </button>
-    </div>
-  );
-}
-
 // Same format the backend falls back to when no name is given, shown as a
 // placeholder so the field is never blank-feeling even before you type.
 function defaultRunName() {
@@ -121,6 +82,10 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
   const router = useRouter();
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
+  // Blank = use the automatic "only new since last run" window, same as
+  // before this existed. Set either to override it for this run only.
+  const [targetPostCount, setTargetPostCount] = useState("");
+  const [daysWindow, setDaysWindow] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,7 +95,11 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
     const res = await fetch("/api/sites/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: name.trim() || undefined }),
+      body: JSON.stringify({
+        name: name.trim() || undefined,
+        targetPostCount: targetPostCount || undefined,
+        daysWindow: daysWindow || undefined,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.campaignId) {
@@ -145,17 +114,51 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
 
   if (naming) {
     return (
-      <div className="flex flex-col items-end gap-1.5 rounded-lg border border-border bg-surface p-3">
-        <label className="self-start text-xs font-medium text-muted">Campaign name (optional)</label>
+      <div className="flex w-72 flex-col gap-1.5 rounded-lg border border-border bg-surface p-3">
+        <label className="text-xs font-medium text-muted">Campaign name (optional)</label>
         <input
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && start()}
           placeholder={defaultRunName()}
-          className="w-64 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm text-text outline-none ring-accent/40 placeholder:text-muted/70 focus:ring-2"
+          className="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm text-text outline-none ring-accent/40 placeholder:text-muted/70 focus:ring-2"
         />
+
         <div className="flex gap-2">
+          <div className="flex flex-1 flex-col gap-1">
+            <label className="text-xs font-medium text-muted">Posts per domain</label>
+            <select
+              value={targetPostCount}
+              onChange={(e) => setTargetPostCount(e.target.value)}
+              className="w-full rounded-lg border border-border bg-bg px-2 py-1.5 text-sm text-text outline-none ring-accent/40 focus:ring-2"
+            >
+              <option value="">Auto</option>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={1000}>No limit</option>
+            </select>
+          </div>
+          <div className="flex flex-1 flex-col gap-1">
+            <label className="text-xs font-medium text-muted">Only last N days</label>
+            <input
+              type="number"
+              min={1}
+              value={daysWindow}
+              onChange={(e) => setDaysWindow(e.target.value)}
+              placeholder="Auto"
+              className="w-full rounded-lg border border-border bg-bg px-2 py-1.5 text-sm text-text outline-none ring-accent/40 placeholder:text-muted/70 focus:ring-2"
+            />
+          </div>
+        </div>
+        <p className="text-xs text-muted">
+          Leave both on Auto to only read what&apos;s new since each site&apos;s last run — the usual monitoring behavior.
+        </p>
+
+        <div className="flex justify-end gap-2">
           <button
             onClick={() => setNaming(false)}
             disabled={busy}

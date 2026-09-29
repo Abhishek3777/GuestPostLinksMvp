@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaigns, domainCrawlStatus, guestPostLinks, watchedSites } from "@/lib/schema";
 import { createCampaign } from "./campaigns.service";
@@ -139,6 +139,29 @@ export async function removeSite(id: string) {
   await db.delete(watchedSites).where(eq(watchedSites.id, id));
 }
 
+// Same two bulk ops, but for an explicit set of checked rows rather than
+// "everything the current search/filter shows".
+export async function setSitesActiveByIds(ids: string[], active: boolean) {
+  if (!ids.length) return 0;
+  const updated = await db.update(watchedSites).set({ active }).where(inArray(watchedSites.id, ids)).returning({ id: watchedSites.id });
+  return updated.length;
+}
+
+export async function removeSitesByIds(ids: string[]) {
+  if (!ids.length) return 0;
+  const deleted = await db.delete(watchedSites).where(inArray(watchedSites.id, ids)).returning({ id: watchedSites.id });
+  return deleted.length;
+}
+
+// The domains a campaign would use if it ran the standing list right now —
+// for the New Campaign page's "pull in the monitor list" option. Not
+// necessarily what a Sites-to-monitor RUN would use (that's active sites at
+// the moment it fires), but the same query.
+export async function listActiveSiteDomains(): Promise<string[]> {
+  const rows = await db.select({ domain: watchedSites.domain }).from(watchedSites).where(eq(watchedSites.active, true));
+  return rows.map((r) => r.domain);
+}
+
 export type RunResult =
   | { ok: true; campaignId: string; siteCount: number; daysWindow: number }
   | { ok: false; error: string; campaignId?: string };
@@ -147,24 +170,22 @@ export type RunResult =
 // contact lookup automatically) and stamps each site with that run. From the
 // second run on it only reads posts newer than the oldest last-run among the
 // active sites, so results are new backlinks, not the same ones again.
-export async function runActiveSites(name?: string, createdBy?: string): Promise<RunResult> {
-  // One monitoring run at a time: a double click, or a second person clicking
-  // while the first run is still going, must not queue the same sites twice.
-  const busy = await db
-    .select({ id: campaigns.id })
-    .from(watchedSites)
-    .innerJoin(campaigns, eq(campaigns.id, watchedSites.lastCampaignId))
-    .where(
-      or(
-        inArray(campaigns.status, ["queued", "running"]),
-        inArray(campaigns.contactStageStatus, ["queued", "running"])
-      )
-    )
-    .limit(1);
-  if (busy.length) {
-    return { ok: false, error: "A monitoring run is still in progress. Wait for it to finish, or open its results.", campaignId: busy[0].id };
-  }
-
+//
+// Queuing a second run while one is still queued/running is ALLOWED — the
+// worker only processes one campaign at a time anyway, so this just waits its
+// turn. The one thing that's imprecise if you do stack runs: `lastRunAt` gets
+// stamped here, at QUEUE time, not when the crawl actually happens, so a run
+// queued while an earlier one is still pending will compute its "since when"
+// window from a lastRunAt the earlier run hasn't actually acted on yet. This
+// never causes duplicate contact work or double-counted leads — processed_posts
+// (global) and the already_found / claimed_by_teammate filter-stage checks
+// still catch anything genuinely re-processed — worst case is an unnecessarily
+// wide or narrow date window on the stacked run, not a data-correctness bug.
+export async function runActiveSites(
+  name?: string,
+  createdBy?: string,
+  overrides: { targetPostCount?: number; daysWindow?: number } = {}
+): Promise<RunResult> {
   const active = await db
     .select({ id: watchedSites.id, domain: watchedSites.domain, lastRunAt: watchedSites.lastRunAt })
     .from(watchedSites)
@@ -172,12 +193,17 @@ export async function runActiveSites(name?: string, createdBy?: string): Promise
   if (!active.length) return { ok: false, error: "No active sites to run. Activate at least one site." };
 
   const now = Date.now();
-  const windows = active.map((s) =>
-    s.lastRunAt ? Math.ceil((now - s.lastRunAt.getTime()) / 86_400_000) + 1 : FIRST_RUN_DAYS
-  );
-  // One window per campaign, so take the widest: a site that has not run for a
-  // month must not be limited by one that ran yesterday.
-  const daysWindow = Math.min(MAX_WINDOW_DAYS, windows.reduce((widest, w) => Math.max(widest, w), 2));
+  let daysWindow: number;
+  if (overrides.daysWindow) {
+    daysWindow = overrides.daysWindow;
+  } else {
+    const windows = active.map((s) =>
+      s.lastRunAt ? Math.ceil((now - s.lastRunAt.getTime()) / 86_400_000) + 1 : FIRST_RUN_DAYS
+    );
+    // One window per campaign, so take the widest: a site that has not run for a
+    // month must not be limited by one that ran yesterday.
+    daysWindow = Math.min(MAX_WINDOW_DAYS, windows.reduce((widest, w) => Math.max(widest, w), 2));
+  }
 
   const trimmedName = name?.trim();
   const campaignId = await createCampaign({
@@ -186,7 +212,7 @@ export async function runActiveSites(name?: string, createdBy?: string): Promise
     autoContact: true,
     incremental: true,
     daysWindow,
-    targetPostCount: MONITOR_TARGET_POSTS,
+    targetPostCount: overrides.targetPostCount || MONITOR_TARGET_POSTS,
     domains: active.map((s) => s.domain),
     createdBy,
   });

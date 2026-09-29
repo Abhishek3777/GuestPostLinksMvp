@@ -14,7 +14,7 @@ export default async function DoNotContactPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-text">Do Not Contact</h1>
           <p className="mt-1 text-sm text-muted">
-            One shared list, used by every campaign&apos;s Stage 2 filter — opt-outs, hostile replies, existing clients.
+            One shared list, used by every campaign&apos;s Stage 2 filter opt-outs, hostile replies, existing clients.
           </p>
         </div>
         <DncUploadForm />

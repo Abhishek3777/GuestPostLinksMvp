@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { UploadCloud, FileText, X, Loader2, Search, Mail } from "lucide-react";
+import { UploadCloud, FileText, X, Loader2, Search, Mail, Radar } from "lucide-react";
 
 type Mode = "discovery" | "direct";
 
@@ -17,6 +17,18 @@ function NewCampaignForm() {
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Resolved server-side at submit time (see api/campaigns/route.ts), not by
+  // merging into the text box — that way it works whether you pasted domains
+  // or uploaded a file, and there's no size limit from stuffing a textarea.
+  const [includeMonitoredSites, setIncludeMonitoredSites] = useState(false);
+  const [monitorSiteCount, setMonitorSiteCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    fetch("/api/sites")
+      .then((r) => r.json())
+      .then((data) => setMonitorSiteCount(Array.isArray(data.domains) ? data.domains.length : 0))
+      .catch(() => setMonitorSiteCount(0));
+  }, []);
 
   function pickFile(f: File | undefined | null) {
     if (f) setFile(f);
@@ -26,11 +38,12 @@ function NewCampaignForm() {
     e.preventDefault();
     setError(null);
 
-    if (inputMethod === "upload" && !file) {
+    const canFallBackToMonitorList = mode === "discovery" && includeMonitoredSites;
+    if (inputMethod === "upload" && !file && !canFallBackToMonitorList) {
       setError(mode === "discovery" ? "Upload a domains file first" : "Upload a target-domains file first");
       return;
     }
-    if (inputMethod === "paste" && !domainsText.trim()) {
+    if (inputMethod === "paste" && !domainsText.trim() && !canFallBackToMonitorList) {
       setError("Enter at least one domain");
       return;
     }
@@ -40,6 +53,7 @@ function NewCampaignForm() {
     if (inputMethod === "upload" && file) formData.set("domainsFile", file);
     else formData.set("domainsText", domainsText);
     formData.set("mode", mode);
+    if (mode === "discovery") formData.set("includeMonitoredSites", includeMonitoredSites ? "true" : "false");
 
     // Whatever goes wrong (server error, dropped connection, a reply that is not
     // JSON) must end with a visible message and a usable button — never a
@@ -110,9 +124,8 @@ function NewCampaignForm() {
                   key={m}
                   type="button"
                   onClick={() => setInputMethod(m)}
-                  className={`rounded-md px-3 py-1 font-medium transition-colors ${
-                    inputMethod === m ? "bg-accent-soft text-accent" : "text-muted hover:text-text"
-                  }`}
+                  className={`rounded-md px-3 py-1 font-medium transition-colors ${inputMethod === m ? "bg-accent-soft text-accent" : "text-muted hover:text-text"
+                    }`}
                 >
                   {m === "paste" ? "Type / paste" : "Upload file"}
                 </button>
@@ -147,9 +160,8 @@ function NewCampaignForm() {
                 pickFile(e.dataTransfer.files?.[0]);
               }}
               onClick={() => fileInputRef.current?.click()}
-              className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed px-6 py-10 text-center transition-colors ${
-                dragOver ? "border-accent bg-accent-soft" : "border-border hover:border-accent/50"
-              }`}
+              className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed px-6 py-10 text-center transition-colors ${dragOver ? "border-accent bg-accent-soft" : "border-border hover:border-accent/50"
+                }`}
             >
               <UploadCloud size={24} className="text-muted" />
               <p className="text-sm text-text">
@@ -185,6 +197,27 @@ function NewCampaignForm() {
             <p className="text-xs text-muted">A header row named &quot;domain&quot; is fine too — it&apos;ll be skipped automatically.</p>
           )}
         </div>
+
+        {mode === "discovery" && monitorSiteCount !== null && monitorSiteCount > 0 && (
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg px-4 py-3">
+            <input
+              type="checkbox"
+              checked={includeMonitoredSites}
+              onChange={(e) => setIncludeMonitoredSites(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="flex items-center gap-1.5 text-sm font-medium text-text">
+                <Radar size={14} className="text-muted" />
+                Also include my Sites to monitor list ({monitorSiteCount.toLocaleString()} active)
+              </span>
+              <span className="text-xs text-muted">
+                Adds your active monitored sites to whatever you&apos;ve typed, pasted or uploaded above duplicates are
+                dropped automatically, so it&apos;s safe to tick even if some overlap.
+              </span>
+            </span>
+          </label>
+        )}
 
         {mode === "discovery" && (
           <div className="grid grid-cols-2 gap-4">
@@ -284,9 +317,8 @@ function ModeCard({
     <button
       type="button"
       onClick={onClick}
-      className={`flex flex-col gap-2 rounded-xl border p-4 text-left transition-colors ${
-        active ? "border-accent bg-accent-soft" : "border-border bg-surface hover:border-accent/50"
-      }`}
+      className={`flex flex-col gap-2 rounded-xl border p-4 text-left transition-colors ${active ? "border-accent bg-accent-soft" : "border-border bg-surface hover:border-accent/50"
+        }`}
     >
       <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${active ? "bg-accent text-white" : "bg-surface-2 text-muted"}`}>
         <Icon size={16} />

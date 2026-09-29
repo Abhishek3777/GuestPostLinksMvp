@@ -171,10 +171,10 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
                           </div>
                         )}
                       </td>
-                      <td className="max-w-[220px] truncate px-5 py-3 font-mono text-[13px] text-text">
+                      <td className="max-w-[220px] break-all px-5 py-3 font-mono text-[13px] text-text">
                         {p.emailAddress ?? <span className="font-sans text-muted">—</span>}
                       </td>
-                      <td className="max-w-[220px] truncate px-5 py-3 font-mono text-[13px]">
+                      <td className="max-w-[280px] break-all px-5 py-3 font-mono text-[13px]">
                         {p.contactFormUrl ? (
                           <a href={p.contactFormUrl} target="_blank" rel="noreferrer" className="text-muted hover:text-accent hover:underline">
                             {p.contactFormUrl}

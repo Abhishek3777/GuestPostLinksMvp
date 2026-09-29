@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
 import { createCampaign } from "@/services/campaigns.service";
+import { listActiveSiteDomains } from "@/services/sites.service";
 import { getCurrentUser } from "@/lib/auth";
 
 export async function POST(req: Request) {
@@ -16,10 +17,11 @@ export async function POST(req: Request) {
     const targetPostCountRaw = String(formData.get("targetPostCount") ?? "").trim();
     const file = formData.get("domainsFile") as File | null;
     const domainsText = String(formData.get("domainsText") ?? "").trim();
+    const includeMonitoredSites = formData.get("includeMonitoredSites") === "true";
 
     if (!name) return NextResponse.json({ error: "Campaign name is required" }, { status: 400 });
-    if (!file && !domainsText) {
-      return NextResponse.json({ error: "Add domains or upload a domains file" }, { status: 400 });
+    if (!file && !domainsText && !includeMonitoredSites) {
+      return NextResponse.json({ error: "Add domains, upload a domains file, or include the monitor list" }, { status: 400 });
     }
 
     const mode = modeRaw === "direct" ? "direct" : "discovery";
@@ -27,10 +29,13 @@ export async function POST(req: Request) {
     const daysWindow = daysWindowRaw ? Number(daysWindowRaw) : undefined;
 
     // Read and validate the domains BEFORE creating anything, so a bad file can
-    // never leave an empty campaign behind.
+    // never leave an empty campaign behind. Merging in the monitor list here
+    // (rather than in the browser) is what lets this work regardless of
+    // whether the rest came from a pasted list or an uploaded file, at any size.
     const fromFile = file ? await readDomainsFromFile(file) : [];
     const fromText = domainsText ? domainsFromText(domainsText) : [];
-    const domains = [...new Set([...fromFile, ...fromText])];
+    const fromMonitorList = includeMonitoredSites ? await listActiveSiteDomains() : [];
+    const domains = [...new Set([...fromFile, ...fromText, ...fromMonitorList])];
 
     if (domains.length === 0) {
       return NextResponse.json(

@@ -2,19 +2,12 @@ import Link from "next/link";
 import { ArrowRight, Pause, Play, Radar } from "lucide-react";
 import { listSites, SITES_PAGE_SIZE, type SiteFilter } from "@/services/sites.service";
 import { StatCard } from "@/components/StatCard";
-import { StatusBadge } from "@/components/StatusBadge";
-import { SiteActiveToggle } from "@/components/SiteActiveToggle";
-import { DeleteSiteButton } from "@/components/DeleteSiteButton";
 import { SitesAddForm } from "@/components/SitesAddForm";
-import { RunSitesButton, SitesBulkActions, SitesFilters } from "@/components/SitesControls";
+import { RunSitesButton, SitesFilters } from "@/components/SitesControls";
+import { SitesTable } from "@/components/SitesTable";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
-
-function formatWhen(d: Date | null): string {
-  if (!d) return "—";
-  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
 
 export default async function SitesPage({
   searchParams,
@@ -83,13 +76,10 @@ export default async function SitesPage({
 
       <div className="flex flex-col gap-3">
         <SitesFilters counts={{ all: allTotal, active: activeTotal, paused: pausedTotal }} />
-        <div className="flex items-center justify-between text-xs text-muted">
-          <span>
-            {total.toLocaleString()} site{total === 1 ? "" : "s"}
-            {q ? ` matching “${q}”` : ""}
-          </span>
-          <SitesBulkActions visibleCount={total} />
-        </div>
+        <span className="text-xs text-muted">
+          {total.toLocaleString()} site{total === 1 ? "" : "s"}
+          {q ? ` matching “${q}”` : ""}
+        </span>
       </div>
 
       {sites.length === 0 ? (
@@ -102,61 +92,7 @@ export default async function SitesPage({
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-surface">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
-                <th className="px-5 py-3">Active</th>
-                <th className="px-5 py-3">Domain</th>
-                <th className="px-5 py-3">Last run</th>
-                <th className="px-5 py-3">Last result</th>
-                <th className="px-5 py-3">Backlinks</th>
-                <th className="px-5 py-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sites.map((s) => {
-                const inProgress =
-                  s.campaignStatus === "queued" ||
-                  s.campaignStatus === "running" ||
-                  s.contactStageStatus === "queued" ||
-                  s.contactStageStatus === "running";
-                return (
-                  <tr key={s.id} className="border-b border-border last:border-0 hover:bg-surface-2">
-                    <td className="px-5 py-3">
-                      <SiteActiveToggle id={s.id} domain={s.domain} active={s.active} />
-                    </td>
-                    <td className={`px-5 py-3 font-medium ${s.active ? "text-text" : "text-muted"}`}>{s.domain}</td>
-                    <td className="px-5 py-3 text-muted">
-                      {s.lastCampaignId ? (
-                        <Link href={`/campaigns/${s.lastCampaignId}`} className="hover:text-accent hover:underline">
-                          {formatWhen(s.lastRunAt)}
-                        </Link>
-                      ) : (
-                        "Never run"
-                      )}
-                    </td>
-                    <td className="px-5 py-3" title={s.crawlReason ?? undefined}>
-                      {!s.lastCampaignId ? (
-                        <span className="text-muted">—</span>
-                      ) : inProgress ? (
-                        <StatusBadge status={s.campaignStatus === "queued" ? "queued" : "running"} />
-                      ) : s.crawlStatus ? (
-                        <StatusBadge status={s.crawlStatus} />
-                      ) : (
-                        <span className="text-muted">not reached</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-3 text-muted">{s.links === null ? "—" : s.links.toLocaleString()}</td>
-                    <td className="px-5 py-3 text-right">
-                      <DeleteSiteButton id={s.id} domain={s.domain} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <SitesTable sites={sites} />
       )}
 
       {pageCount > 1 && (

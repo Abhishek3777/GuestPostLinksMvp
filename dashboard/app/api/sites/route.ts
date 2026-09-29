@@ -1,6 +1,19 @@
 import { NextResponse } from "next/server";
 import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
-import { addSites, setSitesActive, type SiteFilter } from "@/services/sites.service";
+import {
+  addSites,
+  listActiveSiteDomains,
+  removeSitesByIds,
+  setSitesActive,
+  setSitesActiveByIds,
+  type SiteFilter,
+} from "@/services/sites.service";
+
+// The active-sites list, for the New Campaign page's "pull in the monitor
+// list" option.
+export async function GET() {
+  return NextResponse.json({ domains: await listActiveSiteDomains() });
+}
 
 // Add sites: pasted text and/or an uploaded .csv/.txt/.xlsx (same formats as a
 // campaign upload). Existing sites are left exactly as they are.
@@ -21,12 +34,26 @@ export async function POST(req: Request) {
   }
 }
 
-// Bulk activate / pause. Scoped to the list's current search and filter, so
-// "pause all" on a filtered view only touches what that view shows.
+// Bulk activate / pause — either an explicit set of checked rows (`ids`), or
+// (unchanged) everything the list's current search + filter shows.
 export async function PATCH(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { active?: boolean; q?: string; filter?: string };
+  const body = (await req.json().catch(() => ({}))) as { active?: boolean; q?: string; filter?: string; ids?: string[] };
   if (typeof body.active !== "boolean") return NextResponse.json({ error: "active must be true or false" }, { status: 400 });
+
+  if (Array.isArray(body.ids)) {
+    const updated = await setSitesActiveByIds(body.ids, body.active);
+    return NextResponse.json({ updated });
+  }
+
   const filter: SiteFilter = body.filter === "active" || body.filter === "paused" ? body.filter : "all";
   const updated = await setSitesActive(body.active, { q: body.q?.trim() || undefined, filter });
   return NextResponse.json({ updated });
+}
+
+// Bulk delete an explicit set of checked rows.
+export async function DELETE(req: Request) {
+  const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+  if (!Array.isArray(body.ids) || !body.ids.length) return NextResponse.json({ error: "ids is required" }, { status: 400 });
+  const deleted = await removeSitesByIds(body.ids);
+  return NextResponse.json({ deleted });
 }
