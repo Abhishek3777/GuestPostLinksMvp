@@ -69,7 +69,7 @@ export function Sidebar({ email, role }: { email: string; role: Role }) {
       <div className="mt-auto flex items-center justify-end px-5 py-4">
         <ThemeToggle />
       </div>
-      <UserMenu email={email} />
+      <UserMenu email={email} role={role} />
     </aside>
   );
 }
