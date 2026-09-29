@@ -1,15 +1,16 @@
-import { fetchText } from "../httpClient.js";
+import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
 export async function tryFetchWpApi(
   domain: string,
-  robots: RobotsGate
+  robots: RobotsGate,
+  fetcher: Fetcher = fetchText
 ): Promise<DiscoveredPost[] | null> {
   const url = `https://${domain}/wp-json/wp/v2/posts?per_page=20&_fields=link,date,title`;
   if (!robots.isAllowed(url)) return null;
 
-  const res = await fetchText(url);
+  const res = await fetcher(url);
   if (!res.ok || !res.body) return null;
 
   let data: any;

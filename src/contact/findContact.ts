@@ -1,4 +1,4 @@
-import { fallbackDescription, fetchText, type FetchResult } from "../httpClient.js";
+import { fallbackDescription, fetchText, type Fetcher } from "../httpClient.js";
 import {
   CONTACT_FALLBACK_PATHS,
   detectContactForm,
@@ -57,9 +57,7 @@ function looksLikeRealPage(page: { body?: string }): boolean {
   return !/\b404\b|not found|page (does not|doesn't) exist|nothing (was )?found/i.test(title);
 }
 
-// How pages are fetched. The default is the plain HTTP client; the local retry script
-// can pass a real-browser fetcher for sites that challenge plain requests.
-export type Fetcher = (url: string) => Promise<FetchResult>;
+export type { Fetcher };
 
 export async function findContact(domain: string, fetcher: Fetcher = fetchText): Promise<ContactResult> {
   const bare = await fetcher(`https://${domain}/`);

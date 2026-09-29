@@ -1,5 +1,5 @@
 import type { FetchResult } from "../httpClient.js";
-import { sleep } from "../util.js";
+import { playwrightProxy, sleep } from "../util.js";
 
 // A page fetcher that loads the page in a REAL Chromium instead of a plain HTTP
 // request. Some anti-bot walls (SiteGround's "Robot Challenge", Cloudflare's
@@ -29,7 +29,10 @@ export async function createBrowserFetcher(): Promise<BrowserFetcher> {
   } catch {
     throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
   }
-  const browser = await chromium.launch({ headless: true });
+  // Same PROXY_URL httpClient.ts uses for plain requests — an anti-bot wall a
+  // browser gets past on its own doesn't need a proxy, but sites that also rate-limit
+  // by IP still benefit from spreading the rescue pass across DataImpulse's pool.
+  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy() });
 
   async function fetchPage(url: string): Promise<FetchResult> {
     await sleep(1000); // never hit a site back-to-back

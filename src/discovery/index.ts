@@ -1,5 +1,5 @@
 import { loadRobots } from "../robots.js";
-import { fallbackDescription, fetchText } from "../httpClient.js";
+import { fallbackDescription, fetchText, type Fetcher } from "../httpClient.js";
 import type { DiscoveryResult, DiscoverySource } from "../types.js";
 import { tryFetchSitemap } from "./sitemap.js";
 import { tryFetchWpApi } from "./wpApi.js";
@@ -13,11 +13,11 @@ const strategies: [DiscoverySource, typeof tryFetchSitemap][] = [
   ["html-crawl", tryHtmlFallback],
 ];
 
-export async function discoverPosts(domain: string): Promise<DiscoveryResult> {
+export async function discoverPosts(domain: string, fetcher: Fetcher = fetchText): Promise<DiscoveryResult> {
   // Cheap probe first: if the homepage itself is a JS-challenge / anti-bot
   // interstitial, every other path on this domain will hit the same wall.
   // Bail out immediately instead of burning 4 more requests to find that out.
-  const probe = await fetchText(`https://${domain}/`);
+  const probe = await fetcher(`https://${domain}/`);
   const probeDetail = probe.failureDetail ?? probe.errorReason ?? "unknown";
 
   // A 404/410 on the bare homepage doesn't mean the site is down (sitemap or
@@ -31,7 +31,7 @@ export async function discoverPosts(domain: string): Promise<DiscoveryResult> {
   const robots = await loadRobots(domain);
 
   for (const [source, strategy] of strategies) {
-    const posts = await strategy(domain, robots);
+    const posts = await strategy(domain, robots, fetcher);
     if (posts && posts.length) {
       return {
         domain,

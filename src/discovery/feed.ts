@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { fetchText } from "../httpClient.js";
+import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
@@ -46,13 +46,14 @@ function parseRssOrAtom(xml: string): DiscoveredPost[] {
 
 export async function tryFetchFeed(
   domain: string,
-  robots: RobotsGate
+  robots: RobotsGate,
+  fetcher: Fetcher = fetchText
 ): Promise<DiscoveredPost[] | null> {
   for (const path of FEED_PATHS) {
     const url = `https://${domain}${path}`;
     if (!robots.isAllowed(url)) continue;
 
-    const res = await fetchText(url);
+    const res = await fetcher(url);
     if (!res.ok || !res.body) continue;
 
     const body = res.body.trim();

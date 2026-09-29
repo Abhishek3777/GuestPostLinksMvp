@@ -1,3 +1,4 @@
+import { fetchText, type Fetcher } from "./httpClient.js";
 import { discoverPosts } from "./discovery/index.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
 import { extractLinksFromPost } from "./extraction/index.js";
@@ -9,6 +10,9 @@ export interface CrawlDomainOptions {
   // Post URLs an earlier run already finished with (monitoring runs). They are
   // not fetched again, so only NEW posts are read.
   skipPostUrls?: ReadonlySet<string>;
+  // Plain HTTP by default; a local script can pass a real-browser fetcher
+  // (see contact/browserFetcher.ts) for domains that challenge plain requests.
+  fetcher?: Fetcher;
 }
 
 // What happened to a post this run, so it can be remembered for next time.
@@ -40,7 +44,8 @@ export interface CrawlDomainResult {
 }
 
 export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Promise<CrawlDomainResult> {
-  const discovery = await discoverPosts(domain);
+  const fetcher = opts.fetcher ?? fetchText;
+  const discovery = await discoverPosts(domain, fetcher);
   if (discovery.status !== "success") {
     return {
       domain,
@@ -72,7 +77,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
     attempted++;
     // No delay here: every request to a host is already spaced by the
     // per-host limiter in httpClient.ts.
-    const result = await extractLinksFromPost(post.url, domain);
+    const result = await extractLinksFromPost(post.url, domain, fetcher);
 
     if (result.status !== "success") {
       // Not a real article (too short, fetch failed, etc) — don't burn the

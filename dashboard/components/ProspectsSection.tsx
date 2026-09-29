@@ -127,7 +127,8 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
           </p>
         )}
         <div className="overflow-hidden rounded-xl border border-border bg-surface">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-sm">
             <thead>
               <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
                 <th className="px-5 py-3">Root domain</th>
@@ -195,6 +196,7 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
     </>

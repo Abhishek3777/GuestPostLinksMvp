@@ -94,6 +94,11 @@ async function resolvesViaPublicDns(hostname: string): Promise<boolean> {
   return false;
 }
 
+// How a page is fetched. The default everywhere is the plain HTTP client
+// (fetchText); a local script can pass a real-browser fetcher instead for
+// sites that challenge plain requests (see contact/browserFetcher.ts).
+export type Fetcher = (url: string) => Promise<FetchResult>;
+
 export interface FetchResult {
   ok: boolean;
   status?: number;

@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import { fetchText } from "../httpClient.js";
+import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
@@ -8,12 +8,13 @@ const EXCLUDE_PATTERN = /\/(tag|category|categories|author|page|feed|wp-content|
 
 export async function tryHtmlFallback(
   domain: string,
-  robots: RobotsGate
+  robots: RobotsGate,
+  fetcher: Fetcher = fetchText
 ): Promise<DiscoveredPost[] | null> {
   const homepageUrl = `https://${domain}/`;
   if (!robots.isAllowed(homepageUrl)) return null;
 
-  const res = await fetchText(homepageUrl);
+  const res = await fetcher(homepageUrl);
   if (!res.ok || !res.body) return null;
 
   const $ = cheerio.load(res.body);

@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { fetchText } from "../httpClient.js";
+import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
@@ -27,14 +27,15 @@ function extractSubSitemaps(xml: string): string[] {
 
 export async function tryFetchSitemap(
   domain: string,
-  robots: RobotsGate
+  robots: RobotsGate,
+  fetcher: Fetcher = fetchText
 ): Promise<DiscoveredPost[] | null> {
   const candidates = [`https://${domain}/sitemap.xml`, `https://${domain}/sitemap_index.xml`];
 
   for (const candidate of candidates) {
     if (!robots.isAllowed(candidate)) continue;
 
-    const res = await fetchText(candidate);
+    const res = await fetcher(candidate);
     if (!res.ok || !res.body) continue;
 
     const body = res.body.trim();
@@ -53,7 +54,7 @@ export async function tryFetchSitemap(
       const posts: DiscoveredPost[] = [];
       for (const subUrl of prioritized) {
         if (!robots.isAllowed(subUrl)) continue;
-        const subRes = await fetchText(subUrl);
+        const subRes = await fetcher(subUrl);
         if (!subRes.ok || !subRes.body) continue;
         posts.push(...(await parseUrlset(subRes.body)));
       }

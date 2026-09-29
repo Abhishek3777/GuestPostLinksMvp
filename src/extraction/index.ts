@@ -1,4 +1,4 @@
-import { fetchText } from "../httpClient.js";
+import { fetchText, type Fetcher } from "../httpClient.js";
 import { extractArticle } from "./article.js";
 import { extractExternalLinks, type ExtractedLink } from "./links.js";
 import { classifyWordPressPageType } from "./pageType.js";
@@ -36,9 +36,10 @@ export interface PostExtractionResult {
 
 export async function extractLinksFromPost(
   postUrl: string,
-  domain: string
+  domain: string,
+  fetcher: Fetcher = fetchText
 ): Promise<PostExtractionResult> {
-  const res = await fetchText(postUrl);
+  const res = await fetcher(postUrl);
   if (!res.ok || !res.body) {
     return {
       postUrl,
