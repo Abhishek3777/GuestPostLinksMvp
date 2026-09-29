@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { Download, X } from "lucide-react";
-import { DIRECT_COLUMNS, FULL_PIPELINE_COLUMNS } from "@/lib/campaignCsv";
+import { DIRECT_COLUMNS, FULL_PIPELINE_COLUMNS, FULL_PIPELINE_DEFAULT_COLUMNS } from "@/lib/campaignCsv";
 
-// One button per file type. Clicking it opens a column picker (everything
-// ticked by default) with a Download button. The columns are always the same
-// ones; the export just never repeats a domain.
+// One button per file type. Clicking it opens a column picker with a
+// Download button. Direct/Contact-Lookup exports are compact enough already
+// that everything starts ticked; full-pipeline exports start on just the
+// lead-facing columns (see FULL_PIPELINE_DEFAULT_COLUMNS) — the rest of the
+// crawl-process detail is one tick away, not hidden, just not the default.
 export function ExportMenu({
   campaignId,
   mode,
@@ -19,8 +21,9 @@ export function ExportMenu({
   label: string;
 }) {
   const columns: readonly string[] = mode === "direct" ? DIRECT_COLUMNS : FULL_PIPELINE_COLUMNS;
+  const defaultColumns: readonly string[] = mode === "direct" ? DIRECT_COLUMNS : FULL_PIPELINE_DEFAULT_COLUMNS;
   const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set(columns));
+  const [selected, setSelected] = useState<Set<string>>(new Set(defaultColumns));
   // Testing aid for the group-dedup feature — off by default, not meant to be
   // the normal export. See the export route's comment for what it actually shows.
   const [ignoreGroupDedup, setIgnoreGroupDedup] = useState(false);

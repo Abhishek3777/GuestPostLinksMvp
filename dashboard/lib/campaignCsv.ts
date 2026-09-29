@@ -77,6 +77,20 @@ export const FULL_PIPELINE_COLUMNS = [
   "Date Found",
 ] as const;
 
+// What the export dialog pre-ticks for a full-pipeline campaign — the columns
+// a salesperson actually works from (what you fed in, the lead, and how to
+// reach them). The rest of FULL_PIPELINE_COLUMNS stays one tick away for
+// anyone who wants the crawl-process detail too.
+export const FULL_PIPELINE_DEFAULT_COLUMNS = [
+  "Input Domain",
+  "Blog Post URL",
+  "Post Date",
+  "Backlink URL",
+  "Backlink Domain",
+  "Email",
+  "Contact Form URL",
+] as const;
+
 // --- DIRECT (Contact Lookup): one row per domain you sent ---------------------
 export const DIRECT_COLUMNS = [
   "Input Domain",
