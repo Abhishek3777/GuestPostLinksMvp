@@ -9,6 +9,7 @@ import {
 } from "../db/contactResults.js";
 import { loadDoNotContactSet } from "../db/filterResults.js";
 import { destinationExclusion } from "../contact/destination.js";
+import { exclusionReason } from "../filter/exclusions.js";
 import { makePauseCheck } from "./pauseCheck.js";
 import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
 
@@ -68,6 +69,21 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
         limit(async () => {
           if (await shouldPause()) {
             leftForPause++;
+            return;
+          }
+          // Stage 2 decided "kept" whenever this prospect was first saved — but the
+          // do-not-contact list can change afterward (a monitoring re-run finds the
+          // same domain again, or it's simply added later while this prospect sits
+          // "kept, pending"). Re-check right before we'd actually go find contact
+          // details, so a domain added to the list after the fact never gets emailed
+          // or has its contact form looked up.
+          if (exclusionReason(prospect.rootDomain, doNotContact) === "do_not_contact") {
+            await saveContactExclusion(
+              prospect.id,
+              "do_not_contact",
+              "on the do-not-contact list (caught before contact lookup)",
+              null
+            );
             return;
           }
           // One bad site must never sink the whole contact stage: whatever goes
