@@ -51,9 +51,8 @@ export function SitesFilters({ counts }: { counts: { all: number; active: number
           <Link
             key={value}
             href={hrefFor({ filter: value === "all" ? "" : value })}
-            className={`rounded-md px-3 py-1 font-medium transition-colors ${
-              filter === value ? "bg-accent-soft text-accent" : "text-muted hover:text-text"
-            }`}
+            className={`rounded-md px-3 py-1 font-medium transition-colors ${filter === value ? "bg-accent-soft text-accent" : "text-muted hover:text-text"
+              }`}
           >
             {label} · {counts[value].toLocaleString()}
           </Link>
@@ -155,7 +154,7 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
           </div>
         </div>
         <p className="text-xs text-muted">
-          Leave both on Auto to only read what&apos;s new since each site&apos;s last run — the usual monitoring behavior.
+          Leave both on Auto to only read what&apos;s new since each site&apos;s last run the usual monitoring behavior.
         </p>
 
         <div className="flex justify-end gap-2">
