@@ -270,23 +270,20 @@ export function buildProspectsTable(input: CampaignCsvInput): CampaignTable {
 
     // Contactable first (email, then form-only); within a group, the clients
     // seen on the most guest posts first, since a domain that keeps buying
-    // links is the warmest lead.
+    // links is the warmest lead. Only the TOP one is exported — one row per
+    // INPUT domain, period. The database still has every distinct client this
+    // domain's posts actually linked to (nothing is deleted), but the export
+    // is the deliverable a salesperson works from: one domain in, one contact
+    // to reach out to, not a full inventory of every company its blog posts
+    // happened to mention.
     const clients = (clientsByHome.get(d) ?? []).sort(
       (a, b) => contactRank(a.c.status) - contactRank(b.c.status) || b.posts - a.posts || a.client.localeCompare(b.client)
     );
 
     if (clients.length === 0) {
       rows.push([...head, "", "", "", "", "", "", "", "", "", "", ""]);
-      sizes.push(1);
-      continue;
-    }
-
-    for (const { sorted, c } of clients) {
-      // One representative link per client — the newest (sorted[0]), not
-      // every guest-post/backlink pair this client turned up on. What a
-      // reader needs is "this client, reach them here"; which specific page
-      // linked to which specific page on their site is process detail, and
-      // stacking all of it just re-lists the same client several times over.
+    } else {
+      const { sorted, c } = clients[0];
       const best = sorted[0];
       rows.push([
         ...head,
@@ -303,7 +300,7 @@ export function buildProspectsTable(input: CampaignCsvInput): CampaignTable {
         fmtDate(best.dateFound),
       ]);
     }
-    sizes.push(clients.length);
+    sizes.push(1);
   }
 
   return {
