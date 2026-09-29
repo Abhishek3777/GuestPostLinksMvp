@@ -103,6 +103,9 @@ export function exclusionReason(rootDomain: string, doNotContact: Set<string>): 
 
   // Checked FIRST and unconditionally: an opt-out or existing client must
   // override every other rule, including "this is actually a big brand".
+  // Exact registrable-domain match only — homify.com on the list does NOT
+  // also block homify.co.uk. Reverted per explicit instruction: label-based
+  // matching was judged too risky/unpredictable for this list.
   const initial = splitDomain(withoutWww);
   if (initial.label && initial.suffix && doNotContact.has(`${initial.label}.${initial.suffix}`)) {
     return "do_not_contact";

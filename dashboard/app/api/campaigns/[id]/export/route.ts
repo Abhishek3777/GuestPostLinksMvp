@@ -54,14 +54,30 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   const cols = query.get("cols")?.split(",").filter(Boolean);
   const pick = (table: CampaignTable) => (cols?.length ? selectColumns(table, cols) : null) ?? table;
-
-  const table = pick(campaign.mode === "discovery" ? buildProspectsTable(input) : buildCampaignTable(input));
+  // The Excluded sheet is pointless without its reason column, regardless of
+  // whichever columns were picked for the main export — force it in.
+  const excludedCols = cols?.length ? [...new Set([...cols, "Prospect Decision"])] : undefined;
+  const pickExcluded = (table: CampaignTable) => (excludedCols?.length ? selectColumns(table, excludedCols) : null) ?? table;
 
   const safeName = campaign.name.replace(/[^a-z0-9-]+/gi, "_");
   const suffix = (campaign.mode === "direct" ? "contact-lookup" : "full-pipeline") + (ignoreGroupDedup ? "_no-dedup" : "");
 
   if (query.get("format") === "xlsx") {
-    const xlsx = await buildCampaignXlsx([{ name: "Prospects", table }]);
+    // Full pipeline gets two tabs — Contacts (kept leads) and Excluded (why
+    // each one was skipped) — same shape as the reference file this was
+    // matched against. Direct/Contact-Lookup stays one sheet; excluded
+    // domains there are rare enough (mostly just do-not-contact) that a
+    // second tab isn't worth it, and there's no separate "kept vs excluded"
+    // dimension to speak of — it's already one row per domain either way.
+    const sheets =
+      campaign.mode === "discovery"
+        ? [
+            { name: "Contacts", table: pick(buildProspectsTable(input, "kept")) },
+            { name: "Excluded", table: pickExcluded(buildProspectsTable(input, "excluded")) },
+          ]
+        : [{ name: "Contacts", table: pick(buildCampaignTable(input)) }];
+
+    const xlsx = await buildCampaignXlsx(sheets);
     return new NextResponse(new Uint8Array(xlsx), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -70,6 +86,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     });
   }
 
+  // CSV has no tabs, so kept and excluded stay together in one file — the
+  // Prospect Decision column is what distinguishes them there.
+  const table = pick(campaign.mode === "discovery" ? buildProspectsTable(input) : buildCampaignTable(input));
   return new NextResponse(buildTableCsv(table), {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

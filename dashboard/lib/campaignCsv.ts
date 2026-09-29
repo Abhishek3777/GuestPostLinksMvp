@@ -263,7 +263,12 @@ const INPUT_LEVEL_COLUMNS = [
   "Posts Processed",
 ] as const;
 
-export function buildProspectsTable(input: CampaignCsvInput): CampaignTable {
+// "kept" = a real, contactable-or-pending lead (or no lead was found at all —
+// that's not an exclusion, just nothing there). "excluded" = a lead existed
+// but a rule (do-not-contact, big brand, claimed by a teammate, ...) says
+// don't pursue it. Every row is exactly one or the other, never both, which
+// is what makes splitting into separate Contacts/Excluded sheets possible.
+export function buildProspectsTable(input: CampaignCsvInput, filter: "all" | "kept" | "excluded" = "all"): CampaignTable {
   const { inputs, allInputs, crawlByDomain, prospectByDomain, contactRan, linksBySource, linksByClient } =
     uniqueContext(input);
 
@@ -302,6 +307,10 @@ export function buildProspectsTable(input: CampaignCsvInput): CampaignTable {
     const clients = (clientsByHome.get(d) ?? []).sort(
       (a, b) => contactRank(a.c.status) - contactRank(b.c.status) || b.posts - a.posts || a.client.localeCompare(b.client)
     );
+
+    const excluded = clients.length > 0 && clients[0].c.decision !== "kept";
+    if (filter === "kept" && excluded) continue;
+    if (filter === "excluded" && !excluded) continue;
 
     if (clients.length === 0) {
       rows.push([...head, "", "", "", "", "", "", "", "", "", "", ""]);
