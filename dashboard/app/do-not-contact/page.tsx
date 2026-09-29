@@ -40,7 +40,9 @@ export default async function DoNotContactPage() {
               {entries.map((e) => (
                 <tr key={e.id} className="border-b border-border last:border-0 hover:bg-surface-2">
                   <td className="px-5 py-3 font-medium text-text">{e.domain}</td>
-                  <td className="px-5 py-3 text-muted">{new Date(e.addedAt).toLocaleDateString()}</td>
+                  <td className="px-5 py-3 text-muted">
+                    {new Date(e.addedAt).toLocaleDateString(undefined, { timeZone: "Asia/Kolkata" })}
+                  </td>
                   <td className="px-5 py-3 text-right">
                     <DeleteDncButton id={e.id} domain={e.domain} />
                   </td>

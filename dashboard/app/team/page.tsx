@@ -59,7 +59,9 @@ export default async function TeamPage() {
                     <MemberGroupSelect profileId={m.id} currentGroupId={m.groupId} groups={groups} />
                   )}
                 </td>
-                <td className="px-5 py-3 text-muted">{new Date(m.createdAt).toLocaleDateString()}</td>
+                <td className="px-5 py-3 text-muted">
+                  {new Date(m.createdAt).toLocaleDateString(undefined, { timeZone: "Asia/Kolkata" })}
+                </td>
               </tr>
             ))}
           </tbody>

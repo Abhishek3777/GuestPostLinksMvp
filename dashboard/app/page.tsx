@@ -101,7 +101,15 @@ export default async function CampaignsPage() {
                   </td>
                   <td className="px-5 py-4 font-medium text-text">{c.keptProspects}</td>
                   <td className="px-5 py-4 text-muted">
-                    {new Date(c.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {new Date(c.createdAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      // This renders server-side (Railway's container clock, not
+                      // the viewer's) — without a fixed zone this would show UTC.
+                      timeZone: "Asia/Kolkata",
+                    })}
                   </td>
                   <td className="px-5 py-4">
                     {(c.status === "completed" || c.domainsChecked > 0 || c.keptProspects > 0) && (

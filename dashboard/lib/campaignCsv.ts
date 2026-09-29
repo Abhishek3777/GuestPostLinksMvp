@@ -96,10 +96,19 @@ function csvValue(v: string | number | null | undefined): string {
 
 // "YYYY-MM-DD HH:mm:ss" — a format Excel recognises as a real date/time
 // (raw ISO strings with T/Z/milliseconds show up as unparsed text).
+// getHours()/getFullYear() etc. read whatever timezone the SERVER process is
+// in (Railway's containers default to UTC), not the reader's — which is why
+// this needs its own fixed offset instead of the local-time getters. IST has
+// no daylight saving, so a flat +5:30 is always correct, no timezone database
+// or Intl support required: shift the instant forward, then read it back with
+// the UTC getters (which reflect an absolute instant, not a runtime setting).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 function fmtDate(d: Date | null | undefined): string {
   if (!d) return "";
+  const ist = new Date(d.getTime() + IST_OFFSET_MS);
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${ist.getUTCFullYear()}-${p(ist.getUTCMonth() + 1)}-${p(ist.getUTCDate())} ${p(ist.getUTCHours())}:${p(ist.getUTCMinutes())}:${p(ist.getUTCSeconds())}`;
 }
 
 const stripWww = (h: string) => h.toLowerCase().replace(/^www\./, "");
