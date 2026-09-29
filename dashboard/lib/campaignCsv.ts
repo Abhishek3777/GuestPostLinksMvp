@@ -25,12 +25,25 @@ export interface CsvLinkRow {
 export interface CsvProspectRow {
   rootDomain: string;
   exclusionReason: string | null;
+  // Set only when exclusionReason is "claimed_by_teammate" — when the OTHER
+  // campaign actually claimed it, so the day-count below is computed fresh
+  // whenever this is read, not frozen at filter time.
+  claimedAt: Date | null;
   contactStatus: string;
   contactReason: string | null;
   emailAddress: string | null;
   contactFormUrl: string | null;
   finalDomain: string | null;
   contactCheckedAt: Date | null;
+}
+
+// "claimed by a teammate 31 days ago" — the exact wording a salesperson needs
+// to trust the exclusion is a real business rule, not a bug, without exposing
+// who claimed it or which campaign.
+export function claimedByTeammateNote(claimedAt: Date): string {
+  const days = Math.max(0, Math.floor((Date.now() - claimedAt.getTime()) / 86_400_000));
+  const when = days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  return `claimed by a teammate ${when}`;
 }
 
 export interface CampaignCsvInput {
@@ -142,30 +155,14 @@ export function buildCampaignTable(input: CampaignCsvInput): CampaignTable {
 
 // ---------------------------------------------------------------------------
 // UNIQUE EXPORT: the same 17 columns as the full pipeline, with no domain
-// repeated (see buildProspectsTable). Anything that hangs off a row (several
-// posts or links) stays in that row's cells, one value per line, and the lines
-// line up across the columns that describe the same thing.
+// repeated (see buildProspectsTable) and no client repeated either — one row
+// per client (backlink root domain), showing only its single newest
+// guest-post/backlink pair. A client found on several posts is still one
+// prospect; listing every page that happened to link to them is process
+// detail a reader doesn't need to see repeated.
 // ---------------------------------------------------------------------------
 
 type Cell = string | number | null;
-
-// One value per line. If only SOME lines are blank they become "-", so the
-// lines stay lined up with the other columns; all-blank stays empty.
-function lines(values: (string | number | null | undefined)[]): string {
-  const v = values.map((x) => (x === null || x === undefined ? "" : String(x)));
-  return v.every((x) => x === "") ? "" : v.map((x) => x || "-").join("\n");
-}
-
-// A single value stays a real value (so numbers stay numbers in Excel).
-function cell(values: (string | number | null | undefined)[]): Cell {
-  return values.length === 1 ? (values[0] ?? "") : lines(values);
-}
-
-// The same value on every line collapses to one (e.g. a Date Found shared by
-// the whole crawl).
-function collapseSame(values: string[]): string {
-  return values.every((v) => v === values[0]) ? (values[0] ?? "") : lines(values);
-}
 
 function contactCells(p: CsvProspectRow | undefined, contactRan: boolean) {
   const excluded = Boolean(p?.exclusionReason);
@@ -177,12 +174,13 @@ function contactCells(p: CsvProspectRow | undefined, contactRan: boolean) {
   }
   // Contact data only exists for kept prospects that were actually checked.
   const found = p && !excluded && p.contactCheckedAt ? p : null;
+  const claimNote = p?.exclusionReason === "claimed_by_teammate" && p.claimedAt ? claimedByTeammateNote(p.claimedAt) : null;
   return {
     decision: p ? (p.exclusionReason ?? "kept") : "",
     status,
     email: found?.emailAddress ?? "",
     form: found?.contactFormUrl ?? "",
-    notes: found?.contactReason ?? "",
+    notes: claimNote ?? found?.contactReason ?? "",
     redirects: found?.finalDomain ?? "",
   };
 }
@@ -284,19 +282,25 @@ export function buildProspectsTable(input: CampaignCsvInput): CampaignTable {
     }
 
     for (const { sorted, c } of clients) {
+      // One representative link per client — the newest (sorted[0]), not
+      // every guest-post/backlink pair this client turned up on. What a
+      // reader needs is "this client, reach them here"; which specific page
+      // linked to which specific page on their site is process detail, and
+      // stacking all of it just re-lists the same client several times over.
+      const best = sorted[0];
       rows.push([
         ...head,
-        cell(sorted.map((l) => l.guestPostUrl)),
-        cell(sorted.map((l) => fmtDate(l.postDate))),
-        cell(sorted.map((l) => l.externalLink)),
-        sorted[0].rootDomain,
+        best.guestPostUrl,
+        fmtDate(best.postDate),
+        best.externalLink,
+        best.rootDomain,
         c.decision,
         c.status,
         c.email,
         c.form,
         c.notes,
         c.redirects,
-        collapseSame(sorted.map((l) => fmtDate(l.dateFound))),
+        fmtDate(best.dateFound),
       ]);
     }
     sizes.push(clients.length);

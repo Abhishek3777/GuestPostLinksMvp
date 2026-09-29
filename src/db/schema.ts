@@ -58,6 +58,10 @@ export const userRole = pgEnum("user_role", ["admin", "member"]);
 export const groups = pgTable("groups", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  // How long a claimed lead stays off-limits to the rest of this group, once
+  // it's kept as a prospect anywhere in it — admin-set, per group, because
+  // different teams/clients may want a different re-contact cooldown.
+  dedupDays: integer("dedup_days").notNull().default(90),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }).enableRLS();
 
@@ -275,6 +279,12 @@ export const guestPostProspects = pgTable(
     // gov_edu_tld, big_brand, excluded_domain, parked_domain, url_shortener,
     // invalid_domain — see src/filter/exclusions.ts.
     exclusionReason: text("exclusion_reason"),
+    // Set only when exclusionReason is "claimed_by_teammate": the OTHER
+    // prospect row's createdAt (when a group-mate's campaign actually claimed
+    // this domain), so the UI/export can say "claimed 31 days ago" computed
+    // fresh at read time, not a string frozen at filter time that would go
+    // stale the moment someone opens the export later.
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 
     // --- Stage 3 (contact scraping) fields, filled in after the fact ---

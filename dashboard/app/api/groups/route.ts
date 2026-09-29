@@ -15,7 +15,8 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return NextResponse.json({ error: "Group name is required" }, { status: 400 });
+  const dedupDays = Number(body.dedupDays);
 
-  const id = await createGroup(name);
+  const id = await createGroup(name, Number.isInteger(dedupDays) && dedupDays >= 0 ? dedupDays : undefined);
   return NextResponse.json({ id });
 }

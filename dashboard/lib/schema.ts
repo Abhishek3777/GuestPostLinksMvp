@@ -43,6 +43,7 @@ export const userRole = pgEnum("user_role", ["admin", "member"]);
 export const groups = pgTable("groups", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  dedupDays: integer("dedup_days").notNull().default(90),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -149,6 +150,7 @@ export const guestPostProspects = pgTable(
     exampleGuestPostUrl: text("example_guest_post_url"),
     exampleExternalLink: text("example_external_link"),
     exclusionReason: text("exclusion_reason"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     contactStatus: contactStatus("contact_status").notNull().default("pending"),
     emailAddress: text("email_address"),

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { StatusBadge } from "./StatusBadge";
 import { ProportionBar, type Segment } from "./ProportionBar";
+import { claimedByTeammateNote } from "@/lib/campaignCsv";
 
 const REASON_LABEL: Record<string, string> = {
   do_not_contact: "Do not contact",
@@ -19,6 +20,7 @@ interface Prospect {
   rootDomain: string;
   exampleGuestPostUrl: string | null;
   exclusionReason: string | null;
+  claimedAt: Date | null;
   contactStatus: string;
   contactReason: string | null;
   emailAddress: string | null;
@@ -148,7 +150,12 @@ export function ProspectsSection({ prospects, contactStageStarted }: { prospects
                   <td className="px-5 py-3 font-medium text-text">{p.rootDomain}</td>
                   <td className="px-5 py-3">
                     {p.exclusionReason ? (
-                      <StatusBadge status={p.exclusionReason} />
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusBadge status={p.exclusionReason} />
+                        {p.exclusionReason === "claimed_by_teammate" && p.claimedAt && (
+                          <span className="text-[11px] text-muted">{claimedByTeammateNote(new Date(p.claimedAt))}</span>
+                        )}
+                      </div>
                     ) : (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2.5 py-1 text-xs font-medium text-success">
                         <span className="h-1.5 w-1.5 rounded-full bg-success" /> kept

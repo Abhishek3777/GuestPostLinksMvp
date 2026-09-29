@@ -1,6 +1,6 @@
 import { and, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "./client.js";
-import { campaigns, doNotContact, guestPostLinks, guestPostProspects, profiles } from "./schema.js";
+import { campaigns, doNotContact, groups, guestPostLinks, guestPostProspects, profiles } from "./schema.js";
 
 export async function loadDoNotContactSet(): Promise<Set<string>> {
   const rows = await db.select({ domain: doNotContact.domain }).from(doNotContact);
@@ -49,26 +49,36 @@ export async function findAlreadyFoundDomains(campaignId: string, domains: strin
 }
 
 // Domains a CURRENT group-mate's campaign has already kept (not excluded) as
-// a prospect — regardless of whether contact lookup has even run on it yet.
-// First campaign to reach this stage claims the domain; every other
-// group-mate's campaign, this run or any later one, excludes it instead.
-// Members with no group (or the whole campaign's owner having no group) never
-// dedupe against anyone this way — see the note on guestPostProspects in
-// schema.ts.
-export async function findClaimedByGroupmates(campaignId: string, domains: string[]): Promise<Set<string>> {
-  if (domains.length === 0) return new Set();
+// a prospect, within that group's own configured cooldown window —
+// regardless of whether contact lookup has even run on it yet: being kept is
+// exactly what makes a domain show up in an export, and once it's out the
+// door (fed into FormBlast, etc.) re-finding it and reaching out again reads
+// as spam and risks sender reputation. First campaign to reach this stage
+// claims the domain; every other group-mate's campaign, this run or any
+// later one within the window, excludes it instead. Once the window passes,
+// it's fair game again. Members with no group (or the whole campaign's owner
+// having no group) never dedupe against anyone this way — see the note on
+// guestPostProspects in schema.ts.
+// Returns WHEN each claimed domain was claimed (the claiming row's
+// createdAt), not just whether it was — so callers can say "claimed 31 days
+// ago" instead of a bare label. If a domain has more than one qualifying
+// claim (edge case), the most recent one wins, since that's the one that
+// actually determines when the cooldown ends.
+export async function findClaimedByGroupmates(campaignId: string, domains: string[]): Promise<Map<string, Date>> {
+  const claimed = new Map<string, Date>();
+  if (domains.length === 0) return claimed;
 
   const [owner] = await db
-    .select({ groupId: profiles.groupId })
+    .select({ groupId: profiles.groupId, dedupDays: groups.dedupDays })
     .from(campaigns)
     .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
+    .innerJoin(groups, eq(groups.id, profiles.groupId))
     .where(eq(campaigns.id, campaignId));
-  if (!owner?.groupId) return new Set();
+  if (!owner?.groupId) return claimed;
 
-  const claimed = new Set<string>();
   for (let i = 0; i < domains.length; i += 5000) {
     const rows = await db
-      .selectDistinct({ rootDomain: guestPostProspects.rootDomain })
+      .select({ rootDomain: guestPostProspects.rootDomain, claimedAt: sql<string>`max(${guestPostProspects.createdAt})` })
       .from(guestPostProspects)
       .innerJoin(campaigns, eq(campaigns.id, guestPostProspects.campaignId))
       .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
@@ -77,10 +87,12 @@ export async function findClaimedByGroupmates(campaignId: string, domains: strin
           eq(profiles.groupId, owner.groupId),
           ne(guestPostProspects.campaignId, campaignId),
           isNull(guestPostProspects.exclusionReason),
+          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${owner.dedupDays})`),
           inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
         )
-      );
-    for (const r of rows) claimed.add(r.rootDomain);
+      )
+      .groupBy(guestPostProspects.rootDomain);
+    for (const r of rows) claimed.set(r.rootDomain, new Date(r.claimedAt));
   }
   return claimed;
 }
@@ -90,6 +102,7 @@ export interface ProspectInput {
   exampleGuestPostUrl: string | null;
   exampleExternalLink: string | null;
   exclusionReason: string | null;
+  claimedAt?: Date | null;
 }
 
 export async function saveProspects(campaignId: string, prospects: ProspectInput[]) {

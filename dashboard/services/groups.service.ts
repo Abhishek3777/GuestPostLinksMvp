@@ -4,7 +4,13 @@ import { groups, profiles } from "@/lib/schema";
 
 export async function listGroups() {
   const rows = await db
-    .select({ id: groups.id, name: groups.name, createdAt: groups.createdAt, memberCount: sql<number>`count(${profiles.id})::int` })
+    .select({
+      id: groups.id,
+      name: groups.name,
+      dedupDays: groups.dedupDays,
+      createdAt: groups.createdAt,
+      memberCount: sql<number>`count(${profiles.id})::int`,
+    })
     .from(groups)
     .leftJoin(profiles, eq(profiles.groupId, groups.id))
     .groupBy(groups.id)
@@ -12,8 +18,8 @@ export async function listGroups() {
   return rows;
 }
 
-export async function createGroup(name: string) {
-  const [row] = await db.insert(groups).values({ name }).returning({ id: groups.id });
+export async function createGroup(name: string, dedupDays?: number) {
+  const [row] = await db.insert(groups).values({ name, ...(dedupDays ? { dedupDays } : {}) }).returning({ id: groups.id });
   return row.id;
 }
 
@@ -22,6 +28,12 @@ export async function createGroup(name: string) {
 // until placed in a group again.
 export async function deleteGroup(id: string) {
   await db.delete(groups).where(eq(groups.id, id));
+}
+
+// How long a lead one member of this group claims stays off-limits to the
+// rest of it — see findClaimedByGroupmates in src/db/filterResults.ts.
+export async function setGroupDedupDays(id: string, dedupDays: number) {
+  await db.update(groups).set({ dedupDays }).where(eq(groups.id, id));
 }
 
 // null clears a member's group.

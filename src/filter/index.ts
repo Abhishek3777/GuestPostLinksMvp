@@ -45,7 +45,7 @@ async function filterAndSave(
       (claimedByGroupmates.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
       (alreadyFound.has(c.rootDomain) ? "already_found" : "");
     if (reason) byReason[reason] = (byReason[reason] ?? 0) + 1;
-    return { ...c, exclusionReason: reason || null };
+    return { ...c, exclusionReason: reason || null, claimedAt: claimedByGroupmates.get(c.rootDomain) ?? null };
   });
 
   await saveProspects(campaignId, prospects);
