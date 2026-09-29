@@ -21,6 +21,9 @@ export function ExportMenu({
   const columns: readonly string[] = mode === "direct" ? DIRECT_COLUMNS : FULL_PIPELINE_COLUMNS;
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set(columns));
+  // Testing aid for the group-dedup feature — off by default, not meant to be
+  // the normal export. See the export route's comment for what it actually shows.
+  const [ignoreGroupDedup, setIgnoreGroupDedup] = useState(false);
 
   function toggle(column: string) {
     setSelected((prev) => {
@@ -35,6 +38,7 @@ export function ExportMenu({
   const parts = [
     format === "xlsx" ? "format=xlsx" : "",
     chosen.length === columns.length ? "" : `cols=${encodeURIComponent(chosen.join(","))}`,
+    ignoreGroupDedup ? "ignoreGroupDedup=true" : "",
   ].filter(Boolean);
   const href = `/api/campaigns/${campaignId}/export${parts.length ? `?${parts.join("&")}` : ""}`;
 
@@ -84,6 +88,20 @@ export function ExportMenu({
                 </label>
               ))}
             </div>
+
+            <label className="mb-4 flex cursor-pointer items-start gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={ignoreGroupDedup}
+                onChange={(e) => setIgnoreGroupDedup(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-text">Ignore group dedup (testing)</span> — include leads excluded as
+                &quot;claimed by teammate&quot;, so you can compare against the normal export. Their contact info stays blank
+                (lookup was skipped for them).
+              </span>
+            </label>
 
             <a
               href={chosen.length ? href : undefined}

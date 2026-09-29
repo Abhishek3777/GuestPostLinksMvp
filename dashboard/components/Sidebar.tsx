@@ -30,12 +30,12 @@ export function Sidebar({ email, role }: { email: string; role: Role }) {
 
   return (
     <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-border bg-surface">
-      <div className="flex items-center gap-2 px-5 py-5">
+      <Link href="/" className="flex items-center gap-2 px-5 py-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white">
           <Link2 size={16} />
         </div>
         <span className="text-sm font-semibold tracking-tight text-text">Guest Post Links</span>
-      </div>
+      </Link>
 
       <nav className="flex flex-col gap-1 px-3">
         {nav.map(({ href, label, icon: Icon, exact }) => {
