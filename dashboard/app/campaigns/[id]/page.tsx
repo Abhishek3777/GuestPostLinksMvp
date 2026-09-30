@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { getCampaignDetail } from "@/services/campaigns.service";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
@@ -10,7 +10,6 @@ import { AutoRefresh } from "@/components/AutoRefresh";
 import { ExportMenu } from "@/components/ExportMenu";
 import { RunContactStageButton } from "@/components/RunContactStageButton";
 import { PauseResumeButton } from "@/components/PauseResumeButton";
-import { ContactDashboard } from "@/components/ContactDashboard";
 import { RetryFailedButton } from "@/components/RetryFailedButton";
 import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 import { DomainStatusSection } from "@/components/DomainStatusSection";
@@ -93,14 +92,27 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
       <DomainStatusSection domainStatuses={domainStatuses} isLive={isLive} />
 
-      {contactStageStarted && (
-        <ContactDashboard
-          prospects={prospects}
-          stageStatus={campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus}
-        />
+      {/* Contact results move to their own page once Stage 3 starts — with a few
+          thousand Stage 1 rows above, they'd be unreachable stuck at the bottom here. */}
+      {contactStageStarted ? (
+        <Link
+          href={`/campaigns/${id}/contacts`}
+          className="flex items-center justify-between rounded-xl border border-border bg-surface p-5 transition-colors hover:bg-surface-2"
+        >
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Contact results</h2>
+              <StatusBadge status={campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus} />
+            </div>
+            <p className="text-sm text-text">
+              {contactChecked.length} of {keptProspects.length} leads looked up
+            </p>
+          </div>
+          <ArrowRight size={18} className="text-muted" />
+        </Link>
+      ) : (
+        prospects.length > 0 && <ProspectsSection prospects={prospects} contactStageStarted={contactStageStarted} />
       )}
-
-      {prospects.length > 0 && <ProspectsSection prospects={prospects} contactStageStarted={contactStageStarted} />}
 
       {prospects.length === 0 && domainStatuses.length === 0 && (
         <p className="py-10 text-center text-sm text-muted">
