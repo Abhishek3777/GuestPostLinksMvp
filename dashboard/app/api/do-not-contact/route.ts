@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
-import { addDoNotContactDomains } from "@/services/doNotContact.service";
+import { addDoNotContactDomains, removeDoNotContactByIds } from "@/services/doNotContact.service";
 
 export async function POST(req: Request) {
   try {
@@ -23,4 +23,12 @@ export async function POST(req: Request) {
     console.error("[api/do-not-contact] failed:", err);
     return NextResponse.json({ error: "Something went wrong. Nothing was added." }, { status: 500 });
   }
+}
+
+// Bulk delete an explicit set of checked rows.
+export async function DELETE(req: Request) {
+  const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+  if (!Array.isArray(body.ids) || !body.ids.length) return NextResponse.json({ error: "ids is required" }, { status: 400 });
+  const deleted = await removeDoNotContactByIds(body.ids);
+  return NextResponse.json({ deleted });
 }

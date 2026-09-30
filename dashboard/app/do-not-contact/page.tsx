@@ -1,7 +1,7 @@
 import { ShieldOff } from "lucide-react";
 import { listDoNotContact } from "@/services/doNotContact.service";
 import { DncUploadForm } from "@/components/DncUploadForm";
-import { DeleteDncButton } from "@/components/DeleteDncButton";
+import { DncTable } from "@/components/DncTable";
 
 export const dynamic = "force-dynamic";
 
@@ -27,30 +27,7 @@ export default async function DoNotContactPage() {
           <p className="text-sm text-muted">No domains on the list yet.</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-surface">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
-                <th className="px-5 py-3">Domain</th>
-                <th className="px-5 py-3">Added</th>
-                <th className="px-5 py-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((e) => (
-                <tr key={e.id} className="border-b border-border last:border-0 hover:bg-surface-2">
-                  <td className="px-5 py-3 font-medium text-text">{e.domain}</td>
-                  <td className="px-5 py-3 text-muted">
-                    {new Date(e.addedAt).toLocaleDateString(undefined, { timeZone: "Asia/Kolkata" })}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    <DeleteDncButton id={e.id} domain={e.domain} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DncTable entries={entries} />
       )}
     </div>
   );

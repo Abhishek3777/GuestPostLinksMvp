@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { doNotContact } from "@/lib/schema";
 
@@ -23,4 +23,10 @@ export async function addDoNotContactDomains(domains: string[]) {
 
 export async function removeDoNotContact(id: string) {
   await db.delete(doNotContact).where(eq(doNotContact.id, id));
+}
+
+export async function removeDoNotContactByIds(ids: string[]) {
+  if (!ids.length) return 0;
+  const deleted = await db.delete(doNotContact).where(inArray(doNotContact.id, ids)).returning({ id: doNotContact.id });
+  return deleted.length;
 }
