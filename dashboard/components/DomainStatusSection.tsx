@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Search } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { ProportionBar, type Segment } from "./ProportionBar";
 
@@ -43,6 +45,16 @@ export function DomainStatusSection({
   const router = useRouter();
   const params = useSearchParams();
   const filter = params.get("dstatus");
+  const searchParam = params.get("dsearch") ?? "";
+  const [search, setSearch] = useState(searchParam);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    []
+  );
 
   const segments: Segment[] = statusCounts.map(({ status, count }) => ({
     key: status,
@@ -51,11 +63,16 @@ export function DomainStatusSection({
     tone: STATUS_TONE[status] ?? "neutral",
   }));
 
-  function hrefFor(next: { dstatus?: string | null; dpage?: number }) {
+  function hrefFor(next: { dstatus?: string | null; dsearch?: string | null; dpage?: number }) {
     const p = new URLSearchParams(params.toString());
     if (next.dstatus !== undefined) {
       if (next.dstatus) p.set("dstatus", next.dstatus);
       else p.delete("dstatus");
+      p.delete("dpage");
+    }
+    if (next.dsearch !== undefined) {
+      if (next.dsearch) p.set("dsearch", next.dsearch);
+      else p.delete("dsearch");
       p.delete("dpage");
     }
     if (next.dpage !== undefined) {
@@ -68,6 +85,12 @@ export function DomainStatusSection({
 
   function toggleFilter(key: string) {
     router.push(hrefFor({ dstatus: filter === key ? null : key }));
+  }
+
+  function onSearch(value: string) {
+    setSearch(value);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => router.push(hrefFor({ dsearch: value.trim() || null })), 350);
   }
 
   const grandTotal = statusCounts.reduce((sum, s) => sum + s.count, 0);
@@ -91,6 +114,41 @@ export function DomainStatusSection({
             </h2>
             <span className="text-xs text-muted">{total.toLocaleString()} domain(s)</span>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => filter && toggleFilter(filter)}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  !filter ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:text-text"
+                }`}
+              >
+                All · {grandTotal.toLocaleString()}
+              </button>
+              {statusCounts.map(({ status, count }) => (
+                <button
+                  key={status}
+                  onClick={() => toggleFilter(status)}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                    filter === status ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:text-text"
+                  }`}
+                >
+                  {status.replace(/_/g, " ")} · {count.toLocaleString()}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                value={search}
+                onChange={(e) => onSearch(e.target.value)}
+                placeholder="Search domain"
+                className="w-56 rounded-lg border border-border bg-surface py-1.5 pl-9 pr-3 text-sm text-text outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
+              />
+            </div>
+          </div>
+          {(filter || searchParam) && (
+            <p className="text-xs text-muted">Showing {total.toLocaleString()} matching. Filters only change this view — Export still includes everything.</p>
+          )}
           <div className="overflow-hidden rounded-xl border border-border bg-surface">
             <table className="w-full text-sm">
               <thead>
@@ -119,7 +177,7 @@ export function DomainStatusSection({
                 {rows.length === 0 && (
                   <tr>
                     <td colSpan={5} className="px-5 py-10 text-center text-muted">
-                      {isLive ? "Waiting for the worker to start reporting…" : "No domains match this filter."}
+                      {isLive && !filter && !searchParam ? "Waiting for the worker to start reporting…" : "No domains match this filter."}
                     </td>
                   </tr>
                 )}

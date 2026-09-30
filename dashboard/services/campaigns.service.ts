@@ -79,14 +79,14 @@ export async function getCampaignDomainStatusCounts(id: string) {
     .groupBy(domainCrawlStatus.status);
 }
 
-export async function getCampaignDomainStatusesPage(id: string, opts: { page?: number; status?: string } = {}) {
+export async function getCampaignDomainStatusesPage(id: string, opts: { page?: number; status?: string; search?: string } = {}) {
   const page = Math.max(1, opts.page ?? 1);
-  const where = opts.status
-    ? and(
-        eq(domainCrawlStatus.campaignId, id),
-        eq(domainCrawlStatus.status, opts.status as (typeof domainCrawlStatus.$inferSelect)["status"])
-      )
-    : eq(domainCrawlStatus.campaignId, id);
+  const conditions = [eq(domainCrawlStatus.campaignId, id)];
+  if (opts.status) {
+    conditions.push(eq(domainCrawlStatus.status, opts.status as (typeof domainCrawlStatus.$inferSelect)["status"]));
+  }
+  if (opts.search) conditions.push(ilike(domainCrawlStatus.domain, `%${opts.search}%`));
+  const where = and(...conditions);
 
   const [rows, [{ total }]] = await Promise.all([
     db
@@ -259,12 +259,12 @@ export async function getCampaignProspectsPage(
 // rows or a lightweight aggregate. Nothing here scales with campaign size.
 // ---------------------------------------------------------------------------
 
-export async function getCampaignDetail(id: string, opts: { domainPage?: number; domainStatus?: string } = {}) {
+export async function getCampaignDetail(id: string, opts: { domainPage?: number; domainStatus?: string; domainSearch?: string } = {}) {
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
   if (!campaign) return null;
 
   const [domainStatusesPage, domainStatusCounts, [{ linksCount }], [{ totalDomains }]] = await Promise.all([
-    getCampaignDomainStatusesPage(id, { page: opts.domainPage, status: opts.domainStatus }),
+    getCampaignDomainStatusesPage(id, { page: opts.domainPage, status: opts.domainStatus, search: opts.domainSearch }),
     getCampaignDomainStatusCounts(id),
     db.select({ linksCount: sql<number>`count(*)::int` }).from(guestPostLinks).where(eq(guestPostLinks.campaignId, id)),
     db.select({ totalDomains: sql<number>`count(*)::int` }).from(campaignDomains).where(eq(campaignDomains.campaignId, id)),

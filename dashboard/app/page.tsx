@@ -45,12 +45,11 @@ export default async function CampaignsPage() {
           </Link>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-surface">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+          <table className="w-full whitespace-nowrap text-sm">
             <thead>
               <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
                 <th className="px-5 py-3">Campaign</th>
-                {isAdmin && <th className="px-5 py-3">Started by</th>}
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Status</th>
                 <th className="px-5 py-3">Progress</th>
@@ -63,13 +62,15 @@ export default async function CampaignsPage() {
               {campaigns.map((c) => (
                 <tr key={c.id} className="group border-b border-border last:border-0 transition-colors hover:bg-surface-2">
                   <td className="px-5 py-4">
-                    <Link href={`/campaigns/${c.id}`} className="font-medium text-text group-hover:text-accent">
+                    <Link href={`/campaigns/${c.id}`} className="whitespace-nowrap font-medium text-text group-hover:text-accent">
                       {c.name}
                     </Link>
+                    {isAdmin && (
+                      <div className="mt-0.5 max-w-[14rem] truncate text-xs text-muted" title={c.ownerEmail ?? undefined}>
+                        {c.ownerEmail ?? <span className="italic">Unassigned</span>}
+                      </div>
+                    )}
                   </td>
-                  {isAdmin && (
-                    <td className="px-5 py-4 text-muted">{c.ownerEmail ?? <span className="italic">Unassigned</span>}</td>
-                  )}
                   <td className="px-5 py-4">
                     {c.mode === "direct" ? (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-warning-soft px-2.5 py-1 text-xs font-medium text-warning">

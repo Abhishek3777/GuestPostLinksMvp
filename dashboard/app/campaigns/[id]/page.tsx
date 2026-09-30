@@ -28,16 +28,16 @@ export default async function CampaignDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ dpage?: string; dstatus?: string; ppage?: string; preason?: string; psearch?: string }>;
+  searchParams: Promise<{ dpage?: string; dstatus?: string; dsearch?: string; ppage?: string; preason?: string; psearch?: string }>;
 }) {
   const { id } = await params;
   const user = await getCurrentUser();
   if (!user || !(await canAccessCampaign(id, user))) notFound();
 
-  const { dpage, dstatus, ppage, preason, psearch } = await searchParams;
+  const { dpage, dstatus, dsearch, ppage, preason, psearch } = await searchParams;
   const domainPage = Math.max(1, Number(dpage) || 1);
 
-  const detail = await getCampaignDetail(id, { domainPage, domainStatus: dstatus });
+  const detail = await getCampaignDetail(id, { domainPage, domainStatus: dstatus, domainSearch: dsearch || undefined });
   if (!detail) notFound();
 
   const { campaign, domainStatuses, domainStatusesTotal, domainStatusesPageCount, domainStatusCounts, linksCount, totalDomains } = detail;
