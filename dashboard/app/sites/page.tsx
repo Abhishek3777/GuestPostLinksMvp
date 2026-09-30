@@ -5,7 +5,6 @@ import { StatCard } from "@/components/StatCard";
 import { SitesAddForm } from "@/components/SitesAddForm";
 import { RunSitesButton, SitesFilters } from "@/components/SitesControls";
 import { SitesTable } from "@/components/SitesTable";
-import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -24,13 +23,6 @@ export default async function SitesPage({
     page,
   });
   const pausedTotal = allTotal - activeTotal;
-  const running = sites.some(
-    (s) =>
-      s.campaignStatus === "queued" ||
-      s.campaignStatus === "running" ||
-      s.contactStageStatus === "queued" ||
-      s.contactStageStatus === "running"
-  );
 
   function pageHref(target: number) {
     const p = new URLSearchParams();
@@ -43,8 +35,6 @@ export default async function SitesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      {running && <AutoRefresh />}
-
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-text">Sites to monitor</h1>

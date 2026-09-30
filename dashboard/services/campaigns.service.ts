@@ -1,6 +1,18 @@
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects } from "@/lib/schema";
+
+// Every raw-row table on the campaign page is paginated at this size — never
+// fetch more than one page of rows at a time. This is the fix for the Sep 30
+// egress spike: the page used to fetch every domain/link/prospect row on every
+// load (and every 4s while auto-refresh was on), which was fine at test-campaign
+// scale (dozens of rows) and catastrophic at real scale (tens of thousands).
+export const ROWS_PAGE_SIZE = 50;
+
+export async function getCampaign(id: string) {
+  const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
+  return campaign ?? null;
+}
 
 // undefined userId (admin) = every campaign. Otherwise, only ones they started.
 export async function listCampaigns(userId?: string) {
@@ -44,28 +56,237 @@ export async function listCampaigns(userId?: string) {
   }));
 }
 
-export async function getCampaignDetail(id: string) {
+// ---------------------------------------------------------------------------
+// Stage 1: domain status — breakdown counts (unbounded, but just a handful of
+// grouped rows) kept separate from the actual row page (always bounded).
+// ---------------------------------------------------------------------------
+
+export async function getCampaignDomainStatusCounts(id: string) {
+  return db
+    .select({ status: domainCrawlStatus.status, count: sql<number>`count(*)::int` })
+    .from(domainCrawlStatus)
+    .where(eq(domainCrawlStatus.campaignId, id))
+    .groupBy(domainCrawlStatus.status);
+}
+
+export async function getCampaignDomainStatusesPage(id: string, opts: { page?: number; status?: string } = {}) {
+  const page = Math.max(1, opts.page ?? 1);
+  const where = opts.status
+    ? and(
+        eq(domainCrawlStatus.campaignId, id),
+        eq(domainCrawlStatus.status, opts.status as (typeof domainCrawlStatus.$inferSelect)["status"])
+      )
+    : eq(domainCrawlStatus.campaignId, id);
+
+  const [rows, [{ total }]] = await Promise.all([
+    db
+      .select()
+      .from(domainCrawlStatus)
+      .where(where)
+      .orderBy(desc(domainCrawlStatus.checkedAt))
+      .limit(ROWS_PAGE_SIZE)
+      .offset((page - 1) * ROWS_PAGE_SIZE),
+    db.select({ total: sql<number>`count(*)::int` }).from(domainCrawlStatus).where(where),
+  ]);
+  return { rows, total, pageCount: Math.max(1, Math.ceil(total / ROWS_PAGE_SIZE)) };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2/3: prospects — same split, plus the aggregate stats the contact
+// dashboard needs, computed in SQL instead of by scanning every row in JS.
+// ---------------------------------------------------------------------------
+
+export async function getCampaignProspectReasonCounts(id: string) {
+  return db
+    .select({ reason: guestPostProspects.exclusionReason, count: sql<number>`count(*)::int` })
+    .from(guestPostProspects)
+    .where(eq(guestPostProspects.campaignId, id))
+    .groupBy(guestPostProspects.exclusionReason);
+}
+
+const CONTACT_FILTER_KEYS = ["has_email", "has_form", "both", "form_only", "none", "blocked", "failed", "pending"] as const;
+export type ContactFilterKey = (typeof CONTACT_FILTER_KEYS)[number];
+
+function contactFilterCondition(key: string) {
+  switch (key) {
+    case "has_email":
+      return isNotNull(guestPostProspects.emailAddress);
+    case "has_form":
+      return isNotNull(guestPostProspects.contactFormUrl);
+    case "both":
+      return and(isNotNull(guestPostProspects.emailAddress), isNotNull(guestPostProspects.contactFormUrl));
+    case "form_only":
+      return eq(guestPostProspects.contactStatus, "form_only");
+    case "none":
+      return eq(guestPostProspects.contactStatus, "no_contact_found");
+    case "blocked":
+      return eq(guestPostProspects.contactStatus, "blocked");
+    case "failed":
+      return inArray(guestPostProspects.contactStatus, ["timeout", "dns_error", "error"]);
+    case "pending":
+      return eq(guestPostProspects.contactStatus, "pending");
+    default:
+      return undefined;
+  }
+}
+
+// Counts for the filter chips — among KEPT prospects only, same as the chips
+// themselves only ever apply to kept leads.
+export async function getCampaignContactFilterCounts(id: string): Promise<Record<ContactFilterKey, number>> {
+  const kept = and(eq(guestPostProspects.campaignId, id), isNull(guestPostProspects.exclusionReason));
+  const results = await Promise.all(
+    CONTACT_FILTER_KEYS.map((k) =>
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(guestPostProspects)
+        .where(and(kept, contactFilterCondition(k)))
+    )
+  );
+  return Object.fromEntries(CONTACT_FILTER_KEYS.map((k, i) => [k, results[i][0].count])) as Record<ContactFilterKey, number>;
+}
+
+// The contact dashboard's top-line stats — computed in SQL so it never needs
+// the full prospect list just to produce a handful of numbers.
+export async function getCampaignContactStats(id: string) {
+  const kept = and(eq(guestPostProspects.campaignId, id), isNull(guestPostProspects.exclusionReason));
+  const [[{ keptCount }], [{ looked }], [{ reached }], [{ formsConfirmed }], [{ totalEmails }], [{ hasEmailStatus }]] = await Promise.all([
+    db.select({ keptCount: sql<number>`count(*)::int` }).from(guestPostProspects).where(kept),
+    db
+      .select({ looked: sql<number>`count(*)::int` })
+      .from(guestPostProspects)
+      .where(and(kept, isNotNull(guestPostProspects.contactCheckedAt))),
+    db
+      .select({ reached: sql<number>`count(*)::int` })
+      .from(guestPostProspects)
+      .where(and(kept, or(isNotNull(guestPostProspects.emailAddress), isNotNull(guestPostProspects.contactFormUrl)))),
+    db
+      .select({ formsConfirmed: sql<number>`count(*)::int` })
+      .from(guestPostProspects)
+      .where(and(kept, isNotNull(guestPostProspects.contactFormUrl), sql`${guestPostProspects.contactReason} ~* 'contact form confirmed'`)),
+    db
+      .select({
+        totalEmails: sql<number>`coalesce(sum(case when ${guestPostProspects.emailAddress} is not null then array_length(string_to_array(${guestPostProspects.emailAddress}, ','), 1) else 0 end), 0)::int`,
+      })
+      .from(guestPostProspects)
+      .where(kept),
+    // The ProportionBar's "has email" segment specifically means contact_status
+    // = 'has_email' (the primary outcome label), distinct from "email present"
+    // used by the filter chips above — a prospect can carry an email address
+    // alongside a different primary status.
+    db
+      .select({ hasEmailStatus: sql<number>`count(*)::int` })
+      .from(guestPostProspects)
+      .where(and(kept, eq(guestPostProspects.contactStatus, "has_email"))),
+  ]);
+  return { kept: keptCount, looked, reached, formsConfirmed, totalEmails, hasEmailStatus };
+}
+
+// Blocked leads are a small subset of the campaign — bounded on their own,
+// fetched just for the "why sites blocked us" breakdown, which genuinely
+// needs the raw reason text (not something a COUNT can produce).
+export async function getCampaignBlockedReasons(id: string) {
+  const rows = await db
+    .select({ contactReason: guestPostProspects.contactReason })
+    .from(guestPostProspects)
+    .where(
+      and(
+        eq(guestPostProspects.campaignId, id),
+        isNull(guestPostProspects.exclusionReason),
+        eq(guestPostProspects.contactStatus, "blocked")
+      )
+    );
+  return rows.map((r) => r.contactReason);
+}
+
+export async function getCampaignRetryableCount(id: string) {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(guestPostProspects)
+    .where(
+      and(
+        eq(guestPostProspects.campaignId, id),
+        isNull(guestPostProspects.exclusionReason),
+        inArray(guestPostProspects.contactStatus, ["blocked", "timeout", "dns_error", "error"])
+      )
+    );
+  return count;
+}
+
+export async function getCampaignProspectsPage(
+  id: string,
+  opts: { page?: number; reason?: string; contact?: string; search?: string } = {}
+) {
+  const page = Math.max(1, opts.page ?? 1);
+  const conditions = [eq(guestPostProspects.campaignId, id)];
+  if (opts.reason) {
+    conditions.push(
+      opts.reason === "kept" ? isNull(guestPostProspects.exclusionReason) : eq(guestPostProspects.exclusionReason, opts.reason)
+    );
+  }
+  if (opts.contact) {
+    conditions.push(isNull(guestPostProspects.exclusionReason));
+    const c = contactFilterCondition(opts.contact);
+    if (c) conditions.push(c);
+  }
+  if (opts.search) conditions.push(ilike(guestPostProspects.rootDomain, `%${opts.search}%`));
+  const where = and(...conditions);
+
+  const [rows, [{ total }]] = await Promise.all([
+    db
+      .select()
+      .from(guestPostProspects)
+      .where(where)
+      .orderBy(desc(guestPostProspects.createdAt))
+      .limit(ROWS_PAGE_SIZE)
+      .offset((page - 1) * ROWS_PAGE_SIZE),
+    db.select({ total: sql<number>`count(*)::int` }).from(guestPostProspects).where(where),
+  ]);
+  return { rows, total, pageCount: Math.max(1, Math.ceil(total / ROWS_PAGE_SIZE)) };
+}
+
+// ---------------------------------------------------------------------------
+// The live campaign page — everything here is either bounded to one page of
+// rows or a lightweight aggregate. Nothing here scales with campaign size.
+// ---------------------------------------------------------------------------
+
+export async function getCampaignDetail(id: string, opts: { domainPage?: number; domainStatus?: string } = {}) {
+  const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
+  if (!campaign) return null;
+
+  const [domainStatusesPage, domainStatusCounts, [{ linksCount }], [{ totalDomains }]] = await Promise.all([
+    getCampaignDomainStatusesPage(id, { page: opts.domainPage, status: opts.domainStatus }),
+    getCampaignDomainStatusCounts(id),
+    db.select({ linksCount: sql<number>`count(*)::int` }).from(guestPostLinks).where(eq(guestPostLinks.campaignId, id)),
+    db.select({ totalDomains: sql<number>`count(*)::int` }).from(campaignDomains).where(eq(campaignDomains.campaignId, id)),
+  ]);
+
+  return {
+    campaign,
+    domainStatuses: domainStatusesPage.rows,
+    domainStatusesTotal: domainStatusesPage.total,
+    domainStatusesPageCount: domainStatusesPage.pageCount,
+    domainStatusCounts,
+    linksCount,
+    totalDomains,
+  };
+}
+
+// The export route's own fetch — it genuinely needs every raw row (to build
+// "one row per input domain"), unlike the live page above. This only runs
+// once per explicit export click, never on a timer or a poll, so an
+// unpaginated fetch here isn't the problem the page's polling was.
+export async function getCampaignExportData(id: string) {
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
   if (!campaign) return null;
 
   const [domainStatuses, links, prospects, domainRows] = await Promise.all([
-    db
-      .select()
-      .from(domainCrawlStatus)
-      .where(eq(domainCrawlStatus.campaignId, id))
-      .orderBy(desc(domainCrawlStatus.checkedAt)),
+    db.select().from(domainCrawlStatus).where(eq(domainCrawlStatus.campaignId, id)).orderBy(desc(domainCrawlStatus.checkedAt)),
     db.select().from(guestPostLinks).where(eq(guestPostLinks.campaignId, id)).orderBy(desc(guestPostLinks.dateFound)),
-    db
-      .select()
-      .from(guestPostProspects)
-      .where(eq(guestPostProspects.campaignId, id))
-      .orderBy(desc(guestPostProspects.createdAt)),
+    db.select().from(guestPostProspects).where(eq(guestPostProspects.campaignId, id)).orderBy(desc(guestPostProspects.createdAt)),
     db.select({ domain: campaignDomains.domain }).from(campaignDomains).where(eq(campaignDomains.campaignId, id)),
   ]);
 
-  // The exact domains the user sent (sorted — campaign_domains has no order).
   const domains = domainRows.map((r) => r.domain).sort();
-
   return { campaign, domainStatuses, links, prospects, domains, totalDomains: domains.length };
 }
 

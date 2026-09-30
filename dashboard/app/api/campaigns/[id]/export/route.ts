@@ -7,7 +7,7 @@ import {
   type CampaignTable,
 } from "@/lib/campaignCsv";
 import { buildCampaignXlsx } from "@/lib/campaignXlsx";
-import { getCampaignDetail } from "@/services/campaigns.service";
+import { getCampaignExportData } from "@/services/campaigns.service";
 import { requireCampaignAccess } from "@/lib/campaignAccess";
 
 // The column sets live in lib/campaignCsv.ts and nowhere else. This route only
@@ -25,7 +25,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const access = await requireCampaignAccess(id);
   if ("response" in access) return access.response;
 
-  const detail = await getCampaignDetail(id);
+  const detail = await getCampaignExportData(id);
   if (!detail) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
   const { campaign } = detail;
