@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import {
   getCampaign,
+  getCampaignOwnerEmail,
   getCampaignBlockedReasons,
   getCampaignContactFilterCounts,
   getCampaignContactStats,
@@ -12,10 +13,12 @@ import {
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ExportMenu } from "@/components/ExportMenu";
+import { PauseResumeButton } from "@/components/PauseResumeButton";
 import { ContactDashboard } from "@/components/ContactDashboard";
 import { ProspectsSection } from "@/components/ProspectsSection";
 import { CampaignTabs } from "@/components/CampaignTabs";
-import { displayStatus, isActive } from "@/lib/campaignState";
+import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +59,8 @@ export default async function CampaignContactsPage({
 
   const shownStatus = displayStatus(campaign);
   const stageStatus = campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus;
+  const pauseAction = canPauseOrResume(campaign);
+  const ownerEmail = user.role === "admin" ? await getCampaignOwnerEmail(campaign.createdBy) : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -63,10 +68,26 @@ export default async function CampaignContactsPage({
         <Link href={`/campaigns/${id}`} className="mb-2 inline-flex items-center gap-1 text-sm text-muted hover:text-text">
           <ArrowLeft size={14} /> {campaign.name}
         </Link>
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-text">Contact results</h1>
-          <StatusBadge status={stageStatus} />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight text-text">Contact results</h1>
+            <StatusBadge status={stageStatus} />
+          </div>
+          <div className="flex items-center gap-2">
+            {pauseAction && <PauseResumeButton campaignId={campaign.id} action={pauseAction} />}
+            {stats.kept > 0 && (
+              <>
+                <ExportMenu campaignId={campaign.id} mode={campaign.mode} format="xlsx" label="Export Excel" />
+                <ExportMenu campaignId={campaign.id} mode={campaign.mode} format="csv" label="Export CSV" />
+              </>
+            )}
+          </div>
         </div>
+        {user.role === "admin" && (
+          <p className="mt-1 text-sm text-muted">
+            Started by <span className="font-medium text-text">{ownerEmail ?? "Unassigned (created before accounts)"}</span>
+          </p>
+        )}
       </div>
 
       <CampaignTabs campaignId={id} active="contacts" contactStageStarted={contactStageStarted} />

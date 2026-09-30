@@ -1,6 +1,6 @@
 import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects } from "@/lib/schema";
+import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects, profiles } from "@/lib/schema";
 
 // Every raw-row table on the campaign page is paginated at this size — never
 // fetch more than one page of rows at a time. This is the fix for the Sep 30
@@ -14,13 +14,23 @@ export async function getCampaign(id: string) {
   return campaign ?? null;
 }
 
+// Who started a campaign, for the admin-only "Started by" label. Null for legacy
+// campaigns with no owner (or whose owner's profile was since deleted).
+export async function getCampaignOwnerEmail(createdBy: string | null) {
+  if (!createdBy) return null;
+  const [row] = await db.select({ email: profiles.email }).from(profiles).where(eq(profiles.id, createdBy));
+  return row?.email ?? null;
+}
+
 // undefined userId (admin) = every campaign. Otherwise, only ones they started.
 export async function listCampaigns(userId?: string) {
-  const allCampaigns = await db
-    .select()
+  const allCampaignRows = await db
+    .select({ campaign: campaigns, ownerEmail: profiles.email })
     .from(campaigns)
+    .leftJoin(profiles, eq(campaigns.createdBy, profiles.id))
     .where(userId ? eq(campaigns.createdBy, userId) : undefined)
     .orderBy(desc(campaigns.createdAt));
+  const allCampaigns = allCampaignRows.map((r) => ({ ...r.campaign, ownerEmail: r.ownerEmail }));
 
   const [domainCounts, statusCounts, linkCounts, keptProspectCounts] = await Promise.all([
     db

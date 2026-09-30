@@ -24,3 +24,8 @@ const client = postgres(connectionString, {
 
 export const db = drizzle(client, { schema });
 export type DB = typeof db;
+// What db.transaction()'s callback actually receives — structurally close to
+// DB (same .select/.insert/.execute) but a distinct type, since a transaction
+// isn't the top-level client. Functions that can run either directly against
+// db or inside a transaction (e.g. under an advisory lock) take this instead.
+export type Executor = DB | Parameters<Parameters<DB["transaction"]>[0]>[0];

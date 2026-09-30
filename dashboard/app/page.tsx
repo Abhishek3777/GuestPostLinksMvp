@@ -14,7 +14,8 @@ export const dynamic = "force-dynamic";
 export default async function CampaignsPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const campaigns = await listCampaigns(user.role === "admin" ? undefined : user.id);
+  const isAdmin = user.role === "admin";
+  const campaigns = await listCampaigns(isAdmin ? undefined : user.id);
 
   const totalProspects = campaigns.reduce((sum, c) => sum + c.keptProspects, 0);
   // A campaign parked by Pause is not "running now".
@@ -49,6 +50,7 @@ export default async function CampaignsPage() {
             <thead>
               <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
                 <th className="px-5 py-3">Campaign</th>
+                {isAdmin && <th className="px-5 py-3">Started by</th>}
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Status</th>
                 <th className="px-5 py-3">Progress</th>
@@ -65,6 +67,9 @@ export default async function CampaignsPage() {
                       {c.name}
                     </Link>
                   </td>
+                  {isAdmin && (
+                    <td className="px-5 py-4 text-muted">{c.ownerEmail ?? <span className="italic">Unassigned</span>}</td>
+                  )}
                   <td className="px-5 py-4">
                     {c.mode === "direct" ? (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-warning-soft px-2.5 py-1 text-xs font-medium text-warning">

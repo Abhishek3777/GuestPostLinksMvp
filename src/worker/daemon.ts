@@ -5,16 +5,24 @@ import { runContactStage } from "./contactStage.js";
 import { updateContactStageStatus } from "../db/contactResults.js";
 import { closeRescueFetchers } from "../rescueFetchers.js";
 
-// Long-running worker: polls Supabase for queued campaigns and runs them one at
+// Long-running worker: polls Supabase for queued campaigns and runs several at
 // a time. Run it as its own service (PM2 / systemd), separate from the
 // dashboard — restarting the dashboard no longer touches a crawl, and
-// restarting this only pauses one: on startup it re-queues whatever the
-// previous process was in the middle of and carries on.
+// restarting this only pauses whatever's in flight: on startup it re-queues
+// whatever the previous process was in the middle of and carries on.
 //
-// One job at a time on purpose: the per-host rate limit in httpClient.ts lives
-// in this process's memory, so two campaigns in parallel would not respect it
-// against each other.
-
+// MAX_CONCURRENT_CAMPAIGNS jobs run side by side, but all inside THIS ONE
+// process, on purpose: the per-host rate limit in httpClient.ts lives in this
+// process's memory, so every concurrent job shares and respects the same
+// limit. Running multiple separate worker instances instead would each get
+// their own private copy of that limit, with no way to coordinate against
+// each other — that's a real, different problem (see the group-dedup lock in
+// filter/index.ts for the other race this same change had to account for).
+//
+// Claiming a job is already an atomic `UPDATE ... FOR UPDATE SKIP LOCKED`
+// (see db/jobs.ts), so any number of concurrent slots can poll at once
+// without ever double-claiming the same campaign.
+const MAX_CONCURRENT_CAMPAIGNS = Math.max(1, Number(process.env.MAX_CONCURRENT_CAMPAIGNS) || 3);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 5000;
 
 // A stop signal ends the process straight away. The job in flight stays marked
@@ -30,35 +38,35 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-async function runNextJob(): Promise<boolean> {
+async function runNextJob(slot: number): Promise<boolean> {
   const contactCampaignId = await claimNextContactStage();
   if (contactCampaignId) {
-    console.log(`[worker] contact stage for campaign ${contactCampaignId}`);
+    console.log(`[worker:${slot}] contact stage for campaign ${contactCampaignId}`);
     try {
       const outcome = await runContactStage(contactCampaignId);
       if (outcome === "paused") {
         // Back in the contact queue; the claim query skips it until Resume.
         await updateContactStageStatus(contactCampaignId, "queued");
-        console.log(`[worker] contact stage for campaign ${contactCampaignId} paused`);
+        console.log(`[worker:${slot}] contact stage for campaign ${contactCampaignId} paused`);
       } else {
-        console.log(`[worker] contact stage for campaign ${contactCampaignId} finished`);
+        console.log(`[worker:${slot}] contact stage for campaign ${contactCampaignId} finished`);
       }
     } catch (err) {
       // runContactStage already marked it failed
-      console.error(`[worker] contact stage for campaign ${contactCampaignId} failed:`, err);
+      console.error(`[worker:${slot}] contact stage for campaign ${contactCampaignId} failed:`, err);
     }
     return true;
   }
 
   const campaignId = await claimNextCampaign();
   if (campaignId) {
-    console.log(`[worker] campaign ${campaignId}`);
+    console.log(`[worker:${slot}] campaign ${campaignId}`);
     try {
       await runCampaignWorker(campaignId);
-      console.log(`[worker] campaign ${campaignId} finished`);
+      console.log(`[worker:${slot}] campaign ${campaignId} finished`);
     } catch (err) {
       // runCampaignWorker already marked it failed
-      console.error(`[worker] campaign ${campaignId} failed:`, err);
+      console.error(`[worker:${slot}] campaign ${campaignId} failed:`, err);
     }
     return true;
   }
@@ -84,15 +92,19 @@ if (recovered.campaigns || recovered.contactStages) {
     `[worker] resuming interrupted work: ${recovered.campaigns} campaign(s), ${recovered.contactStages} contact stage(s)`
   );
 }
-console.log(`[worker] started, polling every ${POLL_INTERVAL_MS}ms`);
+console.log(`[worker] started, ${MAX_CONCURRENT_CAMPAIGNS} concurrent slot(s), polling every ${POLL_INTERVAL_MS}ms`);
 
-while (true) {
-  try {
-    const didWork = await runNextJob();
-    if (!didWork) await sleep(POLL_INTERVAL_MS);
-  } catch (err) {
-    // e.g. the database is briefly unreachable — log it and keep polling
-    console.error("[worker] poll error:", err);
-    await sleep(POLL_INTERVAL_MS);
+async function workerSlot(slot: number): Promise<never> {
+  while (true) {
+    try {
+      const didWork = await runNextJob(slot);
+      if (!didWork) await sleep(POLL_INTERVAL_MS);
+    } catch (err) {
+      // e.g. the database is briefly unreachable — log it and keep polling
+      console.error(`[worker:${slot}] poll error:`, err);
+      await sleep(POLL_INTERVAL_MS);
+    }
   }
 }
+
+await Promise.all(Array.from({ length: MAX_CONCURRENT_CAMPAIGNS }, (_, i) => workerSlot(i + 1)));

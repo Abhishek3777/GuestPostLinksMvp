@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
 import {
   getCampaignDetail,
+  getCampaignOwnerEmail,
   getCampaignProspectReasonCounts,
   getCampaignProspectsPage,
   getCampaignRetryableCount,
@@ -42,6 +43,7 @@ export default async function CampaignDetailPage({
   const { campaign, domainStatuses, domainStatusesTotal, domainStatusesPageCount, domainStatusCounts, linksCount, totalDomains } = detail;
 
   const contactStageStarted = campaign.contactStageStatus !== "not_started";
+  const ownerEmail = user.role === "admin" ? await getCampaignOwnerEmail(campaign.createdBy) : null;
 
   // The Stage 2 prospect breakdown/table only ever shows here BEFORE contact stage
   // starts — once it does, this moves to its own tab (see CampaignTabs).
@@ -98,6 +100,11 @@ export default async function CampaignDetailPage({
             )}
           </div>
         </div>
+        {user.role === "admin" && (
+          <p className="mt-1 text-sm text-muted">
+            Started by <span className="font-medium text-text">{ownerEmail ?? "Unassigned (created before accounts)"}</span>
+          </p>
+        )}
         {campaign.mode === "discovery" && (
           <p className="mt-1 text-sm text-muted">
             {campaign.targetPostCount >= 1000 ? "No limit" : `Up to ${campaign.targetPostCount}`} posts/domain

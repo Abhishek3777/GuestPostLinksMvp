@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
-import { db } from "./client.js";
+import { db, type Executor } from "./client.js";
 import { campaigns, doNotContact, groups, guestPostLinks, guestPostProspects, profiles } from "./schema.js";
 
 export async function loadDoNotContactSet(): Promise<Set<string>> {
@@ -48,6 +48,21 @@ export async function findAlreadyFoundDomains(campaignId: string, domains: strin
   return found;
 }
 
+// The dedup-relevant facts about a campaign's owner: which group (if any) and
+// that group's configured cooldown. Split out of findClaimedByGroupmates so
+// the caller (filterAndSave) can decide, BEFORE doing anything else, whether
+// this campaign needs to take the per-group lock at all — ungrouped campaigns
+// skip it entirely, exactly as before.
+export async function getCampaignGroup(campaignId: string): Promise<{ groupId: string; dedupDays: number } | null> {
+  const [owner] = await db
+    .select({ groupId: profiles.groupId, dedupDays: groups.dedupDays })
+    .from(campaigns)
+    .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
+    .innerJoin(groups, eq(groups.id, profiles.groupId))
+    .where(eq(campaigns.id, campaignId));
+  return owner?.groupId ? { groupId: owner.groupId, dedupDays: owner.dedupDays } : null;
+}
+
 // Domains a CURRENT group-mate's campaign has already kept (not excluded) as
 // a prospect, within that group's own configured cooldown window —
 // regardless of whether contact lookup has even run on it yet: being kept is
@@ -64,30 +79,32 @@ export async function findAlreadyFoundDomains(campaignId: string, domains: strin
 // ago" instead of a bare label. If a domain has more than one qualifying
 // claim (edge case), the most recent one wins, since that's the one that
 // actually determines when the cooldown ends.
-export async function findClaimedByGroupmates(campaignId: string, domains: string[]): Promise<Map<string, Date>> {
+//
+// `executor` defaults to the shared db client, but filterAndSave passes in a
+// LOCKED transaction here once campaigns can run concurrently — see the
+// pg_advisory_xact_lock in filter/index.ts for why this specific read must
+// happen inside the same lock as the write in saveProspects below.
+export async function findClaimedByGroupmates(
+  campaignId: string,
+  domains: string[],
+  group: { groupId: string; dedupDays: number },
+  executor: Executor = db
+): Promise<Map<string, Date>> {
   const claimed = new Map<string, Date>();
   if (domains.length === 0) return claimed;
 
-  const [owner] = await db
-    .select({ groupId: profiles.groupId, dedupDays: groups.dedupDays })
-    .from(campaigns)
-    .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
-    .innerJoin(groups, eq(groups.id, profiles.groupId))
-    .where(eq(campaigns.id, campaignId));
-  if (!owner?.groupId) return claimed;
-
   for (let i = 0; i < domains.length; i += 5000) {
-    const rows = await db
+    const rows = await executor
       .select({ rootDomain: guestPostProspects.rootDomain, claimedAt: sql<string>`max(${guestPostProspects.createdAt})` })
       .from(guestPostProspects)
       .innerJoin(campaigns, eq(campaigns.id, guestPostProspects.campaignId))
       .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
       .where(
         and(
-          eq(profiles.groupId, owner.groupId),
+          eq(profiles.groupId, group.groupId),
           ne(guestPostProspects.campaignId, campaignId),
           isNull(guestPostProspects.exclusionReason),
-          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${owner.dedupDays})`),
+          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${group.dedupDays})`),
           inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
         )
       )
@@ -105,13 +122,13 @@ export interface ProspectInput {
   claimedAt?: Date | null;
 }
 
-export async function saveProspects(campaignId: string, prospects: ProspectInput[]) {
+export async function saveProspects(campaignId: string, prospects: ProspectInput[], executor: Executor = db) {
   if (!prospects.length) return;
   // Batched: one INSERT caps at ~65k bound parameters, and this row shape binds
   // 6 columns each — a large discovery campaign's unique backlink count can
   // exceed that ceiling well before it exceeds the input-domain count itself.
   for (let i = 0; i < prospects.length; i += 5000) {
-    await db
+    await executor
       .insert(guestPostProspects)
       .values(prospects.slice(i, i + 5000).map((p) => ({ campaignId, ...p })))
       .onConflictDoNothing(); // re-running the filter for the same campaign is a no-op

@@ -1,6 +1,9 @@
+import { sql } from "drizzle-orm";
+import { db, type Executor } from "../db/client.js";
 import {
   findAlreadyFoundDomains,
   findClaimedByGroupmates,
+  getCampaignGroup,
   getCampaignLinks,
   loadDoNotContactSet,
   saveProspects,
@@ -21,19 +24,20 @@ interface Candidate {
   exampleExternalLink: string | null;
 }
 
-async function filterAndSave(
+async function decideAndSave(
+  executor: Executor,
   campaignId: string,
   candidates: Candidate[],
-  opts: { incremental?: boolean } = {}
-): Promise<FilterStageResult> {
-  const doNotContact = await loadDoNotContactSet();
-  // Monitoring runs only: leads an earlier run already found and looked up.
-  const alreadyFound = opts.incremental
-    ? await findAlreadyFoundDomains(campaignId, candidates.map((c) => c.rootDomain))
-    : new Set<string>();
+  doNotContact: Set<string>,
+  alreadyFound: Set<string>,
+  group: { groupId: string; dedupDays: number } | null
+): Promise<{ prospects: ProspectInput[]; byReason: Record<string, number> }> {
   // Every run, not just monitoring: a domain a CURRENT group-mate's campaign
   // already claimed, whether or not contact lookup has even run on it yet.
-  const claimedByGroupmates = await findClaimedByGroupmates(campaignId, candidates.map((c) => c.rootDomain));
+  // Ungrouped campaigns have nothing to check — this map stays empty.
+  const claimedByGroupmates = group
+    ? await findClaimedByGroupmates(campaignId, candidates.map((c) => c.rootDomain), group, executor)
+    : new Map<string, Date>();
 
   const byReason: Record<string, number> = {};
   const prospects: ProspectInput[] = candidates.map((c) => {
@@ -48,7 +52,38 @@ async function filterAndSave(
     return { ...c, exclusionReason: reason || null, claimedAt: claimedByGroupmates.get(c.rootDomain) ?? null };
   });
 
-  await saveProspects(campaignId, prospects);
+  await saveProspects(campaignId, prospects, executor);
+  return { prospects, byReason };
+}
+
+async function filterAndSave(
+  campaignId: string,
+  candidates: Candidate[],
+  opts: { incremental?: boolean } = {}
+): Promise<FilterStageResult> {
+  const doNotContact = await loadDoNotContactSet();
+  // Monitoring runs only: leads an earlier run already found and looked up.
+  const alreadyFound = opts.incremental
+    ? await findAlreadyFoundDomains(campaignId, candidates.map((c) => c.rootDomain))
+    : new Set<string>();
+  const group = await getCampaignGroup(campaignId);
+
+  // The claim-check-then-save above is the one place two campaigns could race:
+  // if two campaigns in the SAME group reach it at the same instant (now
+  // possible once the daemon runs more than one campaign at a time), both
+  // could see a domain as unclaimed before either has saved theirs, and both
+  // would keep it — the exact double-contact risk group dedup exists to
+  // prevent. pg_advisory_xact_lock, keyed to the group, makes same-group
+  // campaigns take a brief turn for just this fast step; every other
+  // campaign — different group, or no group at all — is never blocked by it.
+  // The lock is held for the transaction's lifetime and always releases,
+  // success or failure.
+  const { prospects, byReason } = group
+    ? await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${group.groupId})::bigint)`);
+        return decideAndSave(tx, campaignId, candidates, doNotContact, alreadyFound, group);
+      })
+    : await decideAndSave(db, campaignId, candidates, doNotContact, alreadyFound, null);
 
   const excluded = prospects.filter((p) => p.exclusionReason).length;
   return { totalProspects: prospects.length, kept: prospects.length - excluded, excluded, byReason };
