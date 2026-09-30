@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { domainsFromText, readDomainsFromFile, UnreadableFileError } from "@/lib/domainFile";
-import { addDoNotContactDomains, removeDoNotContactByIds } from "@/services/doNotContact.service";
+import { addDoNotContactDomains, removeDoNotContactByFilter, removeDoNotContactByIds } from "@/services/doNotContact.service";
 
 export async function POST(req: Request) {
   try {
@@ -25,9 +25,17 @@ export async function POST(req: Request) {
   }
 }
 
-// Bulk delete an explicit set of checked rows.
+// Bulk delete — either an explicit set of checked rows (`ids`), or
+// `allMatching: true` to delete every row the current search matches
+// server-side, without ever shipping the full id list to the browser.
 export async function DELETE(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+  const body = (await req.json().catch(() => ({}))) as { ids?: string[]; allMatching?: boolean; q?: string };
+
+  if (body.allMatching) {
+    const deleted = await removeDoNotContactByFilter(body.q?.trim() || undefined);
+    return NextResponse.json({ deleted });
+  }
+
   if (!Array.isArray(body.ids) || !body.ids.length) return NextResponse.json({ error: "ids is required" }, { status: 400 });
   const deleted = await removeDoNotContactByIds(body.ids);
   return NextResponse.json({ deleted });

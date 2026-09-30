@@ -58,3 +58,15 @@ export async function removeDoNotContactByIds(ids: string[]) {
   const deleted = await db.delete(doNotContact).where(inArray(doNotContact.id, ids)).returning({ id: doNotContact.id });
   return deleted.length;
 }
+
+// "Select all N matching" — deletes by the same search filter the list is
+// showing, server-side, in one statement. Not a chunked loop: a WHERE ilike
+// only ever binds one parameter no matter how many rows it matches, so this
+// has none of the 65535-parameter problem an id-list delete would hit at
+// six-figure scale. `q` undefined means "everything" — wiping the whole list,
+// which the UI gates behind an explicit confirmation naming the exact count.
+export async function removeDoNotContactByFilter(q?: string) {
+  const where = q ? ilike(doNotContact.domain, `%${q}%`) : undefined;
+  const deleted = await db.delete(doNotContact).where(where).returning({ id: doNotContact.id });
+  return deleted.length;
+}

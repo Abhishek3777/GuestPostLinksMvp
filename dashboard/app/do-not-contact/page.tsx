@@ -47,7 +47,7 @@ export default async function DoNotContactPage({ searchParams }: { searchParams:
           <p className="text-sm text-muted">{total === 0 ? "No domains on the list yet." : "No domains match this search."}</p>
         </div>
       ) : (
-        <DncTable entries={entries} />
+        <DncTable entries={entries} total={total} q={q.trim()} />
       )}
 
       {pageCount > 1 && (
