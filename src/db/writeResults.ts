@@ -27,8 +27,10 @@ export async function createCampaign(
     .returning({ id: campaigns.id });
 
   const uniqueDomains = [...new Set(opts.domains.map((d) => d.trim().toLowerCase()).filter(Boolean))];
-  if (uniqueDomains.length) {
-    await db.insert(campaignDomains).values(uniqueDomains.map((domain) => ({ campaignId: row.id, domain })));
+  // Batched: one INSERT caps at ~65k bound parameters, which a very large
+  // domain list would exceed.
+  for (let i = 0; i < uniqueDomains.length; i += 5000) {
+    await db.insert(campaignDomains).values(uniqueDomains.slice(i, i + 5000).map((domain) => ({ campaignId: row.id, domain })));
   }
 
   return row.id;

@@ -107,8 +107,13 @@ export interface ProspectInput {
 
 export async function saveProspects(campaignId: string, prospects: ProspectInput[]) {
   if (!prospects.length) return;
-  await db
-    .insert(guestPostProspects)
-    .values(prospects.map((p) => ({ campaignId, ...p })))
-    .onConflictDoNothing(); // re-running the filter for the same campaign is a no-op
+  // Batched: one INSERT caps at ~65k bound parameters, and this row shape binds
+  // 6 columns each — a large discovery campaign's unique backlink count can
+  // exceed that ceiling well before it exceeds the input-domain count itself.
+  for (let i = 0; i < prospects.length; i += 5000) {
+    await db
+      .insert(guestPostProspects)
+      .values(prospects.slice(i, i + 5000).map((p) => ({ campaignId, ...p })))
+      .onConflictDoNothing(); // re-running the filter for the same campaign is a no-op
+  }
 }
