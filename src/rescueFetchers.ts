@@ -12,7 +12,12 @@ import { createCapsolverFetcher, type CapsolverFetcher } from "./contact/capsolv
 // CRAWL_CONCURRENCY — most domains never reach this at all, only ones the
 // plain HTTP client already found blocked, but two real browser tabs is
 // already a meaningful chunk of the worker's memory budget.
-export const browserLimit = pLimit(2);
+//
+// Default 2. Tunable via BROWSER_CONCURRENCY without a deploy: a lookup waiting
+// its turn for a browser page still holds one of CONTACT_CONCURRENCY's slots,
+// so when a lot of domains are blocked this limit, not the slot count, is what
+// sets the campaign's speed. Each extra page costs roughly 200-300MB of RAM.
+export const browserLimit = pLimit(Math.max(1, Number(process.env.BROWSER_CONCURRENCY) || 2));
 
 let browserPromise: Promise<BrowserFetcher> | null = null;
 let capsolverPromise: Promise<CapsolverFetcher> | null = null;

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
 import {
   getCampaignDetail,
+  getCampaignEtas,
   getCampaignOwnerEmail,
   getCampaignProspectReasonCounts,
   getCampaignProspectsPage,
@@ -10,6 +11,7 @@ import {
 } from "@/services/campaigns.service";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
+import { CampaignEtaLabel } from "@/components/CampaignEtaLabel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
 import { ExportMenu } from "@/components/ExportMenu";
@@ -44,6 +46,7 @@ export default async function CampaignDetailPage({
 
   const contactStageStarted = campaign.contactStageStatus !== "not_started";
   const ownerEmail = user.role === "admin" ? await getCampaignOwnerEmail(campaign.createdBy) : null;
+  const eta = (await getCampaignEtas([campaign])).get(campaign.id) ?? { kind: "none" as const };
 
   // The Stage 2 prospect breakdown/table only ever shows here BEFORE contact stage
   // starts — once it does, this moves to its own tab (see CampaignTabs).
@@ -105,6 +108,7 @@ export default async function CampaignDetailPage({
             Started by <span className="font-medium text-text">{ownerEmail ?? "Unassigned (created before accounts)"}</span>
           </p>
         )}
+        <CampaignEtaLabel eta={eta} variant="full" />
         {campaign.mode === "discovery" && (
           <p className="mt-1 text-sm text-muted">
             {campaign.targetPostCount >= 1000 ? "No limit" : `Up to ${campaign.targetPostCount}`} posts/domain

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import {
   getCampaign,
+  getCampaignEtas,
   getCampaignOwnerEmail,
   getCampaignBlockedReasons,
   getCampaignContactFilterCounts,
@@ -13,6 +14,7 @@ import {
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
 import { StatusBadge } from "@/components/StatusBadge";
+import { CampaignEtaLabel } from "@/components/CampaignEtaLabel";
 import { ExportMenu } from "@/components/ExportMenu";
 import { PauseResumeButton } from "@/components/PauseResumeButton";
 import { ContactDashboard } from "@/components/ContactDashboard";
@@ -61,6 +63,7 @@ export default async function CampaignContactsPage({
   const stageStatus = campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus;
   const pauseAction = canPauseOrResume(campaign);
   const ownerEmail = user.role === "admin" ? await getCampaignOwnerEmail(campaign.createdBy) : null;
+  const eta = (await getCampaignEtas([campaign])).get(campaign.id) ?? { kind: "none" as const };
 
   return (
     <div className="flex flex-col gap-8">
@@ -83,6 +86,7 @@ export default async function CampaignContactsPage({
             )}
           </div>
         </div>
+        <CampaignEtaLabel eta={eta} variant="full" />
         {user.role === "admin" && (
           <p className="mt-1 text-sm text-muted">
             Started by <span className="font-medium text-text">{ownerEmail ?? "Unassigned (created before accounts)"}</span>

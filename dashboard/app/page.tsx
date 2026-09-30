@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { FolderKanban, ShieldCheck, Loader2, ArrowRight } from "lucide-react";
 import { redirect } from "next/navigation";
-import { listCampaigns } from "@/services/campaigns.service";
+import { getCampaignEtas, listCampaigns } from "@/services/campaigns.service";
+import { CampaignEtaLabel } from "@/components/CampaignEtaLabel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
 import { ExportMenu } from "@/components/ExportMenu";
@@ -16,6 +17,7 @@ export default async function CampaignsPage() {
   if (!user) redirect("/login");
   const isAdmin = user.role === "admin";
   const campaigns = await listCampaigns(isAdmin ? undefined : user.id);
+  const etas = await getCampaignEtas(campaigns);
 
   const totalProspects = campaigns.reduce((sum, c) => sum + c.keptProspects, 0);
   // A campaign parked by Pause is not "running now".
@@ -89,6 +91,7 @@ export default async function CampaignsPage() {
                     </div>
                   </td>
                   <td className="px-5 py-4">
+                    <div className="flex flex-col items-start gap-1.5">
                     {c.mode === "direct" ? (
                       <StatusBadge status={c.paused && isActive(c) ? displayStatus(c) : c.contactStageStatus} />
                     ) : (
@@ -104,6 +107,8 @@ export default async function CampaignsPage() {
                         </span>
                       </div>
                     )}
+                    <CampaignEtaLabel eta={etas.get(c.id) ?? { kind: "none" }} variant="compact" />
+                    </div>
                   </td>
                   <td className="px-5 py-4 font-medium text-text">{c.keptProspects}</td>
                   <td className="px-5 py-4 text-muted">

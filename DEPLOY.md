@@ -21,6 +21,10 @@ path" at the matching `railway.*.json`.
   **Deliberately a different variable from `PROXY_URL`** — that one applies to
   every plain request, this one only to the escalation path, so routine
   traffic doesn't burn proxy quota it doesn't need.
+  `BROWSER_CONCURRENCY` (default 2) caps how many of those browser pages run at
+  once across the whole worker. Raise it (e.g. 6) when contact lookups are slow
+  and many domains are being blocked — lookups waiting for a browser page hold
+  their concurrency slot. Roughly 200-300MB RAM per extra page.
   Needs the service to have real memory headroom: Chromium alone typically
   wants 300–500MB, on top of whatever the rest of the worker already uses —
   check the service's resource limit on Railway (Settings) isn't still at a

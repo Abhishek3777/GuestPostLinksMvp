@@ -1,5 +1,6 @@
-import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { computeCampaignEta, type CampaignEta, type Events } from "@/lib/campaignEta";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects, profiles } from "@/lib/schema";
 
 // Every raw-row table on the campaign page is paginated at this size — never
@@ -412,4 +413,149 @@ export async function retryFailedContacts(
 
   await db.update(campaigns).set({ contactStageStatus: "queued", paused: false }).where(eq(campaigns.id, campaignId));
   return { ok: true, queued: reset.length };
+}
+
+// ---------------------------------------------------------------------------
+// Estimated finish time. The maths lives in lib/campaignEta.ts (documented in
+// docs/CAMPAIGN_ETA.md); this gathers its inputs. Every query is an aggregate
+// that returns a few numbers per campaign, never rows, and is only run for
+// campaigns that are actually active.
+// ---------------------------------------------------------------------------
+
+type CampaignRow = typeof campaigns.$inferSelect;
+
+// Pages can be opened by several people and reloaded often; the answer only
+// moves slowly, so don't re-run the aggregates more than every 30s per campaign.
+const ETA_CACHE_MS = 30_000;
+const etaCache = new Map<string, { at: number; eta: CampaignEta }>();
+
+// Past campaigns' contact-lookup speed (lookups/minute), used to price the
+// contact stage before this campaign has run it. Moves very slowly: 10 min cache.
+let historicalRate: { at: number; value: number | null } | null = null;
+
+async function getHistoricalContactRate(): Promise<number | null> {
+  if (historicalRate && Date.now() - historicalRate.at < 10 * 60_000) return historicalRate.value;
+  // Per campaign: lookups done and the time between its first and last one.
+  // Needs 50+ lookups, or the span says nothing. Pauses inside the span make it
+  // read slightly slower than reality, which errs on the safe side.
+  const per = db
+    .select({
+      n: sql<number>`count(*)`.as("n"),
+      secs: sql<number>`extract(epoch from max(${guestPostProspects.contactCheckedAt}) - min(${guestPostProspects.contactCheckedAt}))`.as("secs"),
+    })
+    .from(guestPostProspects)
+    .where(gt(guestPostProspects.contactCheckedAt, sql`now() - interval '30 days'`))
+    .groupBy(guestPostProspects.campaignId)
+    .having(sql`count(*) >= 50`)
+    .as("per");
+  const [r] = await db
+    .select({
+      n: sql<number>`coalesce(sum(${per.n}), 0)::float8`,
+      secs: sql<number>`coalesce(sum(${per.secs}), 0)::float8`,
+    })
+    .from(per)
+    .where(sql`${per.secs} > 0`);
+  const value = r && r.secs > 0 ? r.n / (r.secs / 60) : null;
+  historicalRate = { at: Date.now(), value };
+  return value;
+}
+
+export async function getCampaignEtas(rows: CampaignRow[]): Promise<Map<string, CampaignEta>> {
+  const result = new Map<string, CampaignEta>();
+  const now = new Date();
+  const active = rows.filter(
+    (c) => c.status === "queued" || c.status === "running" || c.contactStageStatus === "queued" || c.contactStageStatus === "running"
+  );
+  for (const c of rows) if (!active.includes(c)) result.set(c.id, { kind: "none" });
+
+  const stale = active.filter((c) => {
+    const hit = etaCache.get(c.id);
+    if (hit && now.getTime() - hit.at < ETA_CACHE_MS) {
+      result.set(c.id, hit.eta);
+      return false;
+    }
+    return true;
+  });
+  if (stale.length === 0) return result;
+
+  const ids = stale.map((c) => c.id);
+  const crawlingIds = stale
+    .filter((c) => c.mode === "discovery" && c.autoContact && c.contactStageStatus === "not_started")
+    .map((c) => c.id);
+
+  const since = (minutes: number, col: typeof domainCrawlStatus.checkedAt | typeof guestPostProspects.contactCheckedAt) =>
+    sql<number>`count(*) filter (where ${col} > now() - make_interval(mins => ${minutes}))::int`;
+
+  const [domainTotals, crawlChecked, crawlEvents, contactRows, backlinkRows, historical] = await Promise.all([
+    db
+      .select({ campaignId: campaignDomains.campaignId, count: sql<number>`count(*)::int` })
+      .from(campaignDomains)
+      .where(inArray(campaignDomains.campaignId, ids))
+      .groupBy(campaignDomains.campaignId),
+    db
+      .select({ campaignId: domainCrawlStatus.campaignId, count: sql<number>`count(*)::int` })
+      .from(domainCrawlStatus)
+      .where(inArray(domainCrawlStatus.campaignId, ids))
+      .groupBy(domainCrawlStatus.campaignId),
+    db
+      .select({
+        campaignId: domainCrawlStatus.campaignId,
+        m5: since(5, domainCrawlStatus.checkedAt),
+        m15: since(15, domainCrawlStatus.checkedAt),
+        m60: since(60, domainCrawlStatus.checkedAt),
+      })
+      .from(domainCrawlStatus)
+      .where(and(inArray(domainCrawlStatus.campaignId, ids), gt(domainCrawlStatus.checkedAt, sql`now() - interval '60 minutes'`)))
+      .groupBy(domainCrawlStatus.campaignId),
+    db
+      .select({
+        campaignId: guestPostProspects.campaignId,
+        keptPending: sql<number>`count(*) filter (where ${guestPostProspects.exclusionReason} is null and ${guestPostProspects.contactCheckedAt} is null)::int`,
+        m5: since(5, guestPostProspects.contactCheckedAt),
+        m15: since(15, guestPostProspects.contactCheckedAt),
+        m60: since(60, guestPostProspects.contactCheckedAt),
+      })
+      .from(guestPostProspects)
+      .where(inArray(guestPostProspects.campaignId, ids))
+      .groupBy(guestPostProspects.campaignId),
+    crawlingIds.length
+      ? db
+          .select({ campaignId: guestPostLinks.campaignId, count: sql<number>`count(distinct ${guestPostLinks.rootDomain})::int` })
+          .from(guestPostLinks)
+          .where(inArray(guestPostLinks.campaignId, crawlingIds))
+          .groupBy(guestPostLinks.campaignId)
+      : Promise.resolve([] as { campaignId: string; count: number }[]),
+    getHistoricalContactRate(),
+  ]);
+
+  const totals = new Map(domainTotals.map((r) => [r.campaignId, r.count]));
+  const checked = new Map(crawlChecked.map((r) => [r.campaignId, r.count]));
+  const crawlEv = new Map(crawlEvents.map((r) => [r.campaignId, { m5: r.m5, m15: r.m15, m60: r.m60 }]));
+  const contactMap = new Map(contactRows.map((r) => [r.campaignId, r]));
+  const backlinks = new Map(backlinkRows.map((r) => [r.campaignId, r.count]));
+  const none: Events = { m5: 0, m15: 0, m60: 0 };
+
+  for (const c of stale) {
+    const contact = contactMap.get(c.id);
+    const eta = computeCampaignEta({
+      mode: c.mode,
+      status: c.status,
+      contactStageStatus: c.contactStageStatus,
+      paused: c.paused,
+      autoContact: c.autoContact,
+      startedAt: c.startedAt,
+      contactStageStartedAt: c.contactStageStartedAt,
+      totalDomains: totals.get(c.id) ?? 0,
+      domainsChecked: checked.get(c.id) ?? 0,
+      crawlEvents: crawlEv.get(c.id) ?? none,
+      distinctBacklinkDomains: backlinks.get(c.id) ?? 0,
+      keptPending: contact?.keptPending ?? 0,
+      contactEvents: contact ? { m5: contact.m5, m15: contact.m15, m60: contact.m60 } : none,
+      historicalContactRate: historical,
+      now,
+    });
+    etaCache.set(c.id, { at: now.getTime(), eta });
+    result.set(c.id, eta);
+  }
+  return result;
 }
