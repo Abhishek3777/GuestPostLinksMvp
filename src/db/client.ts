@@ -6,6 +6,11 @@ import * as schema from "./schema.js";
 const connectionString = process.env.DATABASE_URL!;
 
 const client = postgres(connectionString, {
+  // Default is 10 — too tight once CRAWL_CONCURRENCY/CONTACT_CONCURRENCY are
+  // raised well past that, since each concurrent domain eventually needs a
+  // connection to save its result. Raised so DB access doesn't become the new
+  // bottleneck the moment those are turned up.
+  max: 25,
   // Supabase's transaction-mode pooler (port 6543) does not support prepared
   // statements — required off. Same setup as the other Supabase-backed apps.
   prepare: false,
