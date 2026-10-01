@@ -2,6 +2,7 @@ import pLimit from "p-limit";
 import { findContact, type ContactResult } from "../contact/findContact.js";
 import { sleep } from "../util.js";
 import {
+  backfillContactEmails,
   getKeptPendingProspects,
   saveContactExclusion,
   saveContactResult,
@@ -133,6 +134,9 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
       console.log(`[contact] campaign ${campaignId} paused with ${leftForPause} site(s) still to look up`);
       return "paused";
     }
+
+    const picked = await backfillContactEmails(campaignId);
+    console.log(`[contact] campaign ${campaignId} picked a contact email for ${picked} prospect(s)`);
 
     await updateContactStageStatus(campaignId, "completed", { contactStageCompletedAt: new Date() });
     return "completed";

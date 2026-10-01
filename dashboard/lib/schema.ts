@@ -154,6 +154,9 @@ export const guestPostProspects = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     contactStatus: contactStatus("contact_status").notNull().default("pending"),
     emailAddress: text("email_address"),
+    // The single address to actually use, picked out of emailAddress by
+    // pickEmail (lib/pickEmail.ts, ported from pick_email.py).
+    contactEmail: text("contact_email"),
     contactFormUrl: text("contact_form_url"),
     finalDomain: text("final_domain"),
     contactReason: text("contact_reason"),

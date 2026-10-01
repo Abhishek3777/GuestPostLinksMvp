@@ -2,8 +2,10 @@
 // and the terminal report scripts build their files through this, so the
 // column set for each mode is fixed and cannot drift between them.
 //
-// Pure and dependency-free on purpose (no imports) so it can be used from
-// both the Next.js app and the worker scripts.
+// Pure and dependency-free (besides pickEmail, equally pure) on purpose, so
+// it can be used from both the Next.js app and the worker scripts.
+
+import { pickEmail } from "./pickEmail";
 
 export interface CsvCrawlRow {
   domain: string;
@@ -140,49 +142,18 @@ function hostOf(url: string): string {
 }
 
 // Email Address can hold several candidates, comma-separated (a site's footer,
-// header and contact page each surfacing their own address). Contact Email picks
-// the one a salesperson should actually use — hardcoded, not an LLM call:
-// this runs once per lead across thousands of leads per campaign, and a fixed
-// rule is free, instant and gives the same answer every time, which matters
-// more here than catching every last contextual edge case an LLM might.
-// Order: an address on the prospect's OWN domain beats one on some unrelated
-// domain (often a third-party widget/vendor leak); among those, a well-known
-// generic business alias beats an unfamiliar one; failing that, the shortest,
-// digit-free local part (closer12@ reads as auto-generated, info@ doesn't).
-const EMAIL_PREFIX_PRIORITY = ["contact", "info", "hello", "sales", "support", "press", "media"];
-
-function emailDomain(email: string): string {
-  return stripWww(email.slice(email.lastIndexOf("@") + 1));
-}
-
-function emailLocalPart(email: string): string {
-  return email.slice(0, email.indexOf("@")).toLowerCase();
-}
-
-export function pickBestEmail(emailAddress: string | null | undefined, targetDomain: string): string {
-  const candidates = (emailAddress ?? "")
-    .split(",")
-    .map((e) => e.trim())
-    .filter((e) => e.includes("@"));
-  if (candidates.length <= 1) return candidates[0] ?? "";
-
-  const target = stripWww(targetDomain);
-  const sameDomain = candidates.filter((e) => emailDomain(e) === target);
-  const pool = sameDomain.length > 0 ? sameDomain : candidates;
-
-  for (const prefix of EMAIL_PREFIX_PRIORITY) {
-    const match = pool.find((e) => emailLocalPart(e) === prefix);
-    if (match) return match;
-  }
-
-  return [...pool].sort((a, b) => {
-    const aLocal = emailLocalPart(a);
-    const bLocal = emailLocalPart(b);
-    const aHasDigit = /\d/.test(aLocal);
-    const bHasDigit = /\d/.test(bLocal);
-    if (aHasDigit !== bHasDigit) return aHasDigit ? 1 : -1;
-    return aLocal.length - bLocal.length;
-  })[0];
+// header and contact page each surfacing their own address). Contact Email
+// picks the one to actually use — ported from pick_email.py (see
+// PICK-EMAIL-README.md), which scores by role specifically for guest-post
+// PLACEMENT outreach (editor@/guestpost@/submissions@ far outrank info@/
+// contact@, since that's who can actually say yes to a post) and rejects
+// dead-end mailboxes (noreply@, postmaster@, ...) outright. Hardcoded, not an
+// LLM call: this runs once per lead across thousands of leads per campaign, so
+// free, instant and the same answer every time matters more than catching
+// every last contextual edge case.
+function pickBestEmail(emailAddress: string | null | undefined): string {
+  const candidates = (emailAddress ?? "").split(",").map((e) => e.trim()).filter(Boolean);
+  return pickEmail(candidates).primary ?? "";
 }
 
 function toCsv(columns: readonly string[], rows: (string | number | null | undefined)[][]): string {
@@ -338,7 +309,7 @@ function rowFor(d: string, cc: ReturnType<typeof crawlCells>, entry: ClientEntry
     c.decision,
     c.status,
     c.email,
-    pickBestEmail(c.email, top.rootDomain),
+    pickBestEmail(c.email),
     c.form,
     c.notes,
     c.redirects,
@@ -490,7 +461,7 @@ function buildFullPipelineRows(input: CampaignCsvInput): (string | number | null
         decision,
         contactStatus,
         contact?.emailAddress ?? "",
-        pickBestEmail(contact?.emailAddress, l.rootDomain),
+        pickBestEmail(contact?.emailAddress),
         contact?.contactFormUrl ?? "",
         contact?.contactReason ?? "",
         contact?.finalDomain ?? "",
@@ -522,7 +493,7 @@ function buildDirectRows(input: CampaignCsvInput): (string | number | null)[][] 
       p.contactStatus,
       p.contactReason ?? "",
       p.emailAddress ?? "",
-      pickBestEmail(p.emailAddress, d),
+      pickBestEmail(p.emailAddress),
       p.contactFormUrl ?? "",
       p.finalDomain ?? "",
       fmtDate(p.contactCheckedAt),

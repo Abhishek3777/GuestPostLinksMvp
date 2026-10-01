@@ -290,6 +290,12 @@ export const guestPostProspects = pgTable(
     // --- Stage 3 (contact scraping) fields, filled in after the fact ---
     contactStatus: contactStatus("contact_status").notNull().default("pending"),
     emailAddress: text("email_address"), // comma-separated when multiple found
+    // The single address to actually use, picked out of emailAddress by
+    // pickEmail (src/contact/pickEmail.ts, ported from pick_email.py) —
+    // scored for guest-post PLACEMENT outreach, so editor@/guestpost@ beat
+    // generic info@/contact@. Null when emailAddress is null or every
+    // candidate is a dead-end mailbox (noreply@, postmaster@, ...).
+    contactEmail: text("contact_email"),
     contactFormUrl: text("contact_form_url"),
     finalDomain: text("final_domain"), // where the domain redirected to, if anywhere
     contactReason: text("contact_reason"), // WHY it failed / came back partial — see findContact.ts
