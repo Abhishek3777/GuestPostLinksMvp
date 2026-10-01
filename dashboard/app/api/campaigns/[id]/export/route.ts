@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   buildCampaignTable,
+  buildNoBacklinksTable,
   buildProspectsTable,
   buildTableCsv,
   selectColumns,
@@ -13,11 +14,12 @@ import { requireCampaignAccess } from "@/lib/campaignAccess";
 // The column sets live in lib/campaignCsv.ts and nowhere else. This route only
 // fetches data and hands it over.
 //
-// Full-pipeline campaigns export the usual 17 columns, grouped by input domain:
-// every domain you sent appears once and every backlink domain appears once.
-// Contact Lookup campaigns are already one row per domain.
+// Full-pipeline campaigns export the usual 17 columns, one row per unique
+// backlink domain (an input domain that found 800 distinct backlinks produces
+// 800 rows, Input Domain repeated down the column). Contact Lookup campaigns
+// are already one row per domain.
 //
-//   ?format=xlsx           Excel with the important columns highlighted (default: CSV)
+//   ?format=xlsx           Excel (plain cells, clickable links) (default: CSV)
 //   ?cols=A,B,C            keep only these columns (default: all of them)
 //   ?ignoreGroupDedup=true testing only — see the note below
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -58,22 +60,27 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // whichever columns were picked for the main export — force it in.
   const excludedCols = cols?.length ? [...new Set([...cols, "Prospect Decision"])] : undefined;
   const pickExcluded = (table: CampaignTable) => (excludedCols?.length ? selectColumns(table, excludedCols) : null) ?? table;
+  // Same idea for No Backlinks Found — "why" (crawl status / contact status)
+  // is the whole point of that sheet, so it stays even if not explicitly picked.
+  const incompleteCols = cols?.length ? [...new Set([...cols, "Status", "Reason / Notes", "Contact Status"])] : undefined;
+  const pickIncomplete = (table: CampaignTable) => (incompleteCols?.length ? selectColumns(table, incompleteCols) : null) ?? table;
 
   const safeName = campaign.name.replace(/[^a-z0-9-]+/gi, "_");
   const suffix = (campaign.mode === "direct" ? "contact-lookup" : "full-pipeline") + (ignoreGroupDedup ? "_no-dedup" : "");
 
   if (query.get("format") === "xlsx") {
-    // Full pipeline gets two tabs — Contacts (kept leads) and Excluded (why
-    // each one was skipped) — same shape as the reference file this was
-    // matched against. Direct/Contact-Lookup stays one sheet; excluded
-    // domains there are rare enough (mostly just do-not-contact) that a
-    // second tab isn't worth it, and there's no separate "kept vs excluded"
-    // dimension to speak of — it's already one row per domain either way.
+    // Full pipeline gets three tabs — Contacts (a real email or contact form
+    // was found, full stop), Excluded (a business rule says don't pursue it),
+    // and No Contact Info (everything else: no backlink at all, or a backlink
+    // that's kept but came back with nothing to reach out with yet). Matches
+    // the reference file this was built against, where every single Contacts
+    // row has real data in every column — no half-finished rows mixed in.
     const sheets =
       campaign.mode === "discovery"
         ? [
             { name: "Contacts", table: pick(buildProspectsTable(input, "kept")) },
             { name: "Excluded", table: pickExcluded(buildProspectsTable(input, "excluded")) },
+            { name: "No Contact Info", table: pickIncomplete(buildNoBacklinksTable(input)) },
           ]
         : [{ name: "Contacts", table: pick(buildCampaignTable(input)) }];
 

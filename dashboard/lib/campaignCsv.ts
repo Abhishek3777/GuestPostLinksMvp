@@ -71,6 +71,7 @@ export const FULL_PIPELINE_COLUMNS = [
   "Prospect Decision", //     kept, or why it was excluded (do_not_contact, big_brand, ...)
   "Contact Status", //        has_email / form_only / no_contact_found / blocked / ... / not run yet
   "Email",
+  "Contact Email", //            which one of (possibly several) Email addresses to actually use
   "Contact Form URL",
   "Contact Notes", //         why contact lookup failed or came back partial
   "Redirects To", //          where the backlink domain redirects, if anywhere
@@ -88,7 +89,9 @@ export const FULL_PIPELINE_DEFAULT_COLUMNS = [
   "Backlink URL",
   "Backlink Domain",
   "Email",
+  "Contact Email",
   "Contact Form URL",
+  "Date Found",
 ] as const;
 
 // --- DIRECT (Contact Lookup): one row per domain you sent ---------------------
@@ -98,6 +101,7 @@ export const DIRECT_COLUMNS = [
   "Result", //                has_email / form_only / no_contact_found / blocked / dns_error / timeout / error / or the exclusion reason
   "Reason / Notes",
   "Email",
+  "Contact Email",
   "Contact Form URL",
   "Redirects To",
   "Checked At",
@@ -135,6 +139,52 @@ function hostOf(url: string): string {
   }
 }
 
+// Email Address can hold several candidates, comma-separated (a site's footer,
+// header and contact page each surfacing their own address). Contact Email picks
+// the one a salesperson should actually use — hardcoded, not an LLM call:
+// this runs once per lead across thousands of leads per campaign, and a fixed
+// rule is free, instant and gives the same answer every time, which matters
+// more here than catching every last contextual edge case an LLM might.
+// Order: an address on the prospect's OWN domain beats one on some unrelated
+// domain (often a third-party widget/vendor leak); among those, a well-known
+// generic business alias beats an unfamiliar one; failing that, the shortest,
+// digit-free local part (closer12@ reads as auto-generated, info@ doesn't).
+const EMAIL_PREFIX_PRIORITY = ["contact", "info", "hello", "sales", "support", "press", "media"];
+
+function emailDomain(email: string): string {
+  return stripWww(email.slice(email.lastIndexOf("@") + 1));
+}
+
+function emailLocalPart(email: string): string {
+  return email.slice(0, email.indexOf("@")).toLowerCase();
+}
+
+export function pickBestEmail(emailAddress: string | null | undefined, targetDomain: string): string {
+  const candidates = (emailAddress ?? "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.includes("@"));
+  if (candidates.length <= 1) return candidates[0] ?? "";
+
+  const target = stripWww(targetDomain);
+  const sameDomain = candidates.filter((e) => emailDomain(e) === target);
+  const pool = sameDomain.length > 0 ? sameDomain : candidates;
+
+  for (const prefix of EMAIL_PREFIX_PRIORITY) {
+    const match = pool.find((e) => emailLocalPart(e) === prefix);
+    if (match) return match;
+  }
+
+  return [...pool].sort((a, b) => {
+    const aLocal = emailLocalPart(a);
+    const bLocal = emailLocalPart(b);
+    const aHasDigit = /\d/.test(aLocal);
+    const bHasDigit = /\d/.test(bLocal);
+    if (aHasDigit !== bHasDigit) return aHasDigit ? 1 : -1;
+    return aLocal.length - bLocal.length;
+  })[0];
+}
+
 function toCsv(columns: readonly string[], rows: (string | number | null | undefined)[][]): string {
   // BOM so Excel reads UTF-8 (non-English domains/emails) correctly.
   return "﻿" + [columns.map(csvValue).join(","), ...rows.map((r) => r.map(csvValue).join(","))].join("\r\n");
@@ -148,22 +198,9 @@ function sourceOf(link: CsvLinkRow, inputs: string[]): string {
   return inputs.find((d) => host === d || host.endsWith("." + d)) ?? host;
 }
 
-// The columns a reader should see first: the real domains, guest post URLs and
-// contact details. The .xlsx export highlights these; the CSV can't carry
-// formatting, so it just has the same columns unstyled.
-export const FULL_PIPELINE_HIGHLIGHT = [
-  "Input Domain",
-  "Blog Post URL",
-  "Backlink Domain",
-  "Email",
-  "Contact Form URL",
-] as const;
-export const DIRECT_HIGHLIGHT = ["Input Domain", "Email", "Contact Form URL"] as const;
-
 export interface CampaignTable {
   columns: readonly string[];
   rows: (string | number | null)[][];
-  highlight: readonly string[];
   // Columns that describe a whole GROUP of consecutive rows (e.g. an input domain
   // and its crawl result) and how many rows each group spans. Excel merges them;
   // a CSV leaves them blank after a group's first row.
@@ -172,8 +209,8 @@ export interface CampaignTable {
 
 export function buildCampaignTable(input: CampaignCsvInput): CampaignTable {
   return input.mode === "direct"
-    ? { columns: DIRECT_COLUMNS, rows: buildDirectRows(input), highlight: DIRECT_HIGHLIGHT }
-    : { columns: FULL_PIPELINE_COLUMNS, rows: buildFullPipelineRows(input), highlight: FULL_PIPELINE_HIGHLIGHT };
+    ? { columns: DIRECT_COLUMNS, rows: buildDirectRows(input) }
+    : { columns: FULL_PIPELINE_COLUMNS, rows: buildFullPipelineRows(input) };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +260,6 @@ const newestFirst = (a: CsvLinkRow, b: CsvLinkRow) =>
   a.guestPostUrl.localeCompare(b.guestPostUrl) ||
   a.externalLink.localeCompare(b.externalLink);
 
-const contactRank = (status: string) => (status === "has_email" ? 0 : status === "form_only" ? 1 : 2);
-
 function uniqueContext(input: CampaignCsvInput) {
   const inputs = [...new Set(input.domains.map(stripWww))];
   const crawlByDomain = new Map(input.crawl.map((c) => [stripWww(c.domain), c]));
@@ -246,37 +281,20 @@ function uniqueContext(input: CampaignCsvInput) {
   return { inputs, allInputs, crawlByDomain, prospectByDomain, contactRan, linksBySource, linksByClient };
 }
 
-// One sheet, grouped by INPUT DOMAIN. Each domain you sent appears once (its
-// crawl columns are merged across its rows in Excel, blank after the first row
-// in a CSV), with its backlink domains listed under it. Each backlink domain
-// (client) appears once too: it sits under the input domain its newest post is
-// on. Everything else about the client, including posts on any other input
-// domain, its emails and its forms, stays in its own row, one value per line.
-// Input domains that produced no backlinks get a row of their own so every
-// domain you sent is still accounted for.
-const INPUT_LEVEL_COLUMNS = [
-  "Input Domain",
-  "Status",
-  "Failure Type",
-  "Reason / Notes",
-  "Discovery Source",
-  "Posts Processed",
-] as const;
+// Give every client to exactly ONE input domain: the one its newest post is on.
+// A client found via several landing pages or several posts on that SAME
+// input domain is already one entry here (linksByClient grouped them by root
+// domain before this ever runs) — that's what collapses "two URLs, same
+// backlink domain" down to one row with no extra work.
+interface ClientEntry {
+  client: string;
+  sorted: CsvLinkRow[];
+  posts: number;
+  c: ReturnType<typeof contactCells>;
+}
 
-// "kept" = a real, contactable-or-pending lead (or no lead was found at all —
-// that's not an exclusion, just nothing there). "excluded" = a lead existed
-// but a rule (do-not-contact, big brand, claimed by a teammate, ...) says
-// don't pursue it. Every row is exactly one or the other, never both, which
-// is what makes splitting into separate Contacts/Excluded sheets possible.
-export function buildProspectsTable(input: CampaignCsvInput, filter: "all" | "kept" | "excluded" = "all"): CampaignTable {
-  const { inputs, allInputs, crawlByDomain, prospectByDomain, contactRan, linksBySource, linksByClient } =
-    uniqueContext(input);
-
-  // Give every client to exactly ONE input domain: the one its newest post is on.
-  const clientsByHome = new Map<
-    string,
-    { client: string; sorted: CsvLinkRow[]; posts: number; c: ReturnType<typeof contactCells> }[]
-  >();
+function groupClientsByHome({ inputs, prospectByDomain, contactRan, linksByClient }: ReturnType<typeof uniqueContext>) {
+  const clientsByHome = new Map<string, ClientEntry[]>();
   for (const [client, links] of linksByClient) {
     const sorted = [...links].sort(newestFirst);
     const home = sourceOf(sorted[0], inputs);
@@ -288,59 +306,88 @@ export function buildProspectsTable(input: CampaignCsvInput, filter: "all" | "ke
       c: contactCells(prospectByDomain.get(client), contactRan),
     });
   }
+  return clientsByHome;
+}
 
-  const rows: Cell[][] = [];
-  const sizes: number[] = [];
+// A row's bucket: "kept" means an ACTUAL lead — a backlink that is not
+// excluded AND actually came back with an email or a contact form. A backlink
+// with no contact info yet (pending, nothing found, blocked, failed) is not a
+// quality problem to show off in Contacts; it is unfinished work, and goes to
+// the No Contact Info sheet alongside domains that found no backlink at all.
+// "excluded" is unchanged: a business rule (do-not-contact, big brand,
+// claimed by a teammate, ...) says don't pursue it, regardless of contact info.
+// Every row is exactly one of the three, never more than one, which is what
+// makes the three-way Contacts/Excluded/No Contact Info split possible.
+function classify(entry: ClientEntry | undefined): "kept" | "excluded" | "incomplete" {
+  if (!entry) return "incomplete";
+  if (entry.c.decision !== "kept") return "excluded";
+  return entry.c.email || entry.c.form ? "kept" : "incomplete";
+}
 
+function rowFor(d: string, cc: ReturnType<typeof crawlCells>, entry: ClientEntry | undefined): Cell[] {
+  const head: Cell[] = [d, cc.status, cc.failureType, cc.notes, cc.source, cc.posts];
+  if (!entry) return [...head, "", "", "", "", "no_backlinks_found", "", "", "", "", "", "", ""];
+  const { sorted, c } = entry;
+  const top = sorted[0];
+  return [
+    ...head,
+    top.guestPostUrl,
+    fmtDate(top.postDate),
+    top.externalLink,
+    top.rootDomain,
+    c.decision,
+    c.status,
+    c.email,
+    pickBestEmail(c.email, top.rootDomain),
+    c.form,
+    c.notes,
+    c.redirects,
+    fmtDate(top.dateFound),
+  ];
+}
+
+// Every row this campaign can produce, one per unique backlink domain homed
+// to its input domain (not one row per input domain) — an input domain that
+// found 800 distinct backlinks produces 800 rows, each classified on its OWN
+// status, not collapsed into a single "best" pick. An input domain with no
+// backlinks at all still gets exactly one row, same as before.
+function buildAllRows(input: CampaignCsvInput): { bucket: "kept" | "excluded" | "incomplete"; row: Cell[] }[] {
+  const ctx = uniqueContext(input);
+  const { allInputs, crawlByDomain, linksBySource } = ctx;
+  const clientsByHome = groupClientsByHome(ctx);
+
+  const out: { bucket: "kept" | "excluded" | "incomplete"; row: Cell[] }[] = [];
   for (const d of allInputs) {
     const cc = crawlCells(crawlByDomain.get(d), linksBySource.get(d)?.length ?? 0);
-    const head: Cell[] = [d, cc.status, cc.failureType, cc.notes, cc.source, cc.posts];
+    const entries = clientsByHome.get(d) ?? [];
 
-    // Contactable first (email, then form-only); within a group, the clients
-    // seen on the most guest posts first, since a domain that keeps buying
-    // links is the warmest lead. Only the TOP one is exported — one row per
-    // INPUT domain, period. The database still has every distinct client this
-    // domain's posts actually linked to (nothing is deleted), but the export
-    // is the deliverable a salesperson works from: one domain in, one contact
-    // to reach out to, not a full inventory of every company its blog posts
-    // happened to mention.
-    const clients = (clientsByHome.get(d) ?? []).sort(
-      (a, b) => contactRank(a.c.status) - contactRank(b.c.status) || b.posts - a.posts || a.client.localeCompare(b.client)
-    );
-
-    const excluded = clients.length > 0 && clients[0].c.decision !== "kept";
-    if (filter === "kept" && excluded) continue;
-    if (filter === "excluded" && !excluded) continue;
-
-    if (clients.length === 0) {
-      rows.push([...head, "", "", "", "", "", "", "", "", "", "", ""]);
-    } else {
-      const { sorted, c } = clients[0];
-      const best = sorted[0];
-      rows.push([
-        ...head,
-        best.guestPostUrl,
-        fmtDate(best.postDate),
-        best.externalLink,
-        best.rootDomain,
-        c.decision,
-        c.status,
-        c.email,
-        c.form,
-        c.notes,
-        c.redirects,
-        fmtDate(best.dateFound),
-      ]);
+    if (entries.length === 0) {
+      out.push({ bucket: "incomplete", row: rowFor(d, cc, undefined) });
+      continue;
     }
-    sizes.push(1);
+    for (const entry of entries) {
+      out.push({ bucket: classify(entry), row: rowFor(d, cc, entry) });
+    }
   }
+  return out;
+}
 
-  return {
-    columns: FULL_PIPELINE_COLUMNS,
-    rows,
-    highlight: FULL_PIPELINE_HIGHLIGHT,
-    groups: { columns: INPUT_LEVEL_COLUMNS, sizes },
-  };
+export function buildProspectsTable(input: CampaignCsvInput, filter: "all" | "kept" | "excluded" = "all"): CampaignTable {
+  const all = buildAllRows(input);
+  const rows = (filter === "all" ? all : all.filter((r) => r.bucket === filter)).map((r) => r.row);
+  return { columns: FULL_PIPELINE_COLUMNS, rows };
+}
+
+// Everything that isn't a clean, actionable lead: no backlink found at all, OR
+// a backlink that's kept (not excluded) but came back with no email and no
+// contact form — pending lookup, nothing found, blocked, or failed. Split out
+// of Contacts so that sheet only ever shows rows with real contact info, same
+// shape the reference file this was matched against uses.
+export function buildNoBacklinksTable(input: CampaignCsvInput): CampaignTable {
+  const rows = buildAllRows(input)
+    .filter((r) => r.bucket === "incomplete")
+    .map((r) => r.row);
+  return { columns: FULL_PIPELINE_COLUMNS, rows };
 }
 
 // Keeps only the wanted columns (in the table's own order). Null when none of
@@ -351,7 +398,6 @@ export function selectColumns(table: CampaignTable, wanted: readonly string[]): 
   return {
     columns: keep.map((i) => table.columns[i]),
     rows: table.rows.map((r) => keep.map((i) => r[i])),
-    highlight: table.highlight.filter((h) => wanted.includes(h)),
     groups: table.groups && {
       columns: table.groups.columns.filter((c) => wanted.includes(c)),
       sizes: table.groups.sizes,
@@ -417,7 +463,7 @@ function buildFullPipelineRows(input: CampaignCsvInput): (string | number | null
     const head = [d, status, failureType, notes, crawl?.source ?? "", crawl?.postsProcessed ?? 0];
 
     if (links.length === 0) {
-      rows.push([...head, "", "", "", "", "", "", "", "", "", "", ""]);
+      rows.push([...head, "", "", "", "", "", "", "", "", "", "", "", ""]);
       continue;
     }
 
@@ -444,6 +490,7 @@ function buildFullPipelineRows(input: CampaignCsvInput): (string | number | null
         decision,
         contactStatus,
         contact?.emailAddress ?? "",
+        pickBestEmail(contact?.emailAddress, l.rootDomain),
         contact?.contactFormUrl ?? "",
         contact?.contactReason ?? "",
         contact?.finalDomain ?? "",
@@ -461,12 +508,12 @@ function buildDirectRows(input: CampaignCsvInput): (string | number | null)[][] 
 
   const rows = inputs.map((d) => {
     const p = prospectByDomain.get(d);
-    if (!p) return [d, "Pending", "pending", "", "", "", "", ""];
+    if (!p) return [d, "Pending", "pending", "", "", "", "", "", ""];
 
     if (p.exclusionReason) {
-      return [d, "Excluded", p.exclusionReason, "excluded at the filter stage — no contact lookup attempted", "", "", "", ""];
+      return [d, "Excluded", p.exclusionReason, "excluded at the filter stage — no contact lookup attempted", "", "", "", "", ""];
     }
-    if (!p.contactCheckedAt) return [d, "Pending", "pending", "", "", "", "", ""];
+    if (!p.contactCheckedAt) return [d, "Pending", "pending", "", "", "", "", "", ""];
 
     const found = p.contactStatus === "has_email" || p.contactStatus === "form_only";
     return [
@@ -475,6 +522,7 @@ function buildDirectRows(input: CampaignCsvInput): (string | number | null)[][] 
       p.contactStatus,
       p.contactReason ?? "",
       p.emailAddress ?? "",
+      pickBestEmail(p.emailAddress, d),
       p.contactFormUrl ?? "",
       p.finalDomain ?? "",
       fmtDate(p.contactCheckedAt),
