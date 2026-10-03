@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
 
   const body = (await req.json().catch(() => ({}))) as { name?: string; targetPostCount?: number; daysWindow?: number };
-  const result = await runActiveSites(typeof body.name === "string" ? body.name : undefined, user.id, {
+  const result = await runActiveSites(user, typeof body.name === "string" ? body.name : undefined, {
     targetPostCount: Number(body.targetPostCount) || undefined,
     daysWindow: Number(body.daysWindow) || undefined,
   });

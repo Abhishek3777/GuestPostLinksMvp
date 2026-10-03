@@ -34,7 +34,7 @@ export async function POST(req: Request) {
     // whether the rest came from a pasted list or an uploaded file, at any size.
     const fromFile = file ? await readDomainsFromFile(file) : [];
     const fromText = domainsText ? domainsFromText(domainsText) : [];
-    const fromMonitorList = includeMonitoredSites ? await listActiveSiteDomains() : [];
+    const fromMonitorList = includeMonitoredSites ? await listActiveSiteDomains(user) : [];
     const domains = [...new Set([...fromFile, ...fromText, ...fromMonitorList])];
 
     if (domains.length === 0) {

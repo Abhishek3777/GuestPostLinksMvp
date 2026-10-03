@@ -137,6 +137,7 @@ export const watchedSites = pgTable("watched_sites", {
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   lastCampaignId: uuid("last_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+  createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
 });
 
 export const guestPostProspects = pgTable(

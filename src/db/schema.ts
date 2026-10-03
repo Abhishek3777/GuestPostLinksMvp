@@ -207,6 +207,11 @@ export const doNotContact = pgTable("do_not_contact", {
  * persists: sites are switched active/paused, and "Run active sites" turns the
  * active ones into a campaign that only looks at posts published since the last
  * run. lastRunAt/lastCampaignId record that run so the list can show it.
+ *
+ * Ownership mirrors campaigns.createdBy: a member sees and runs only the
+ * sites they added; an admin sees and can filter by everyone's. Null means
+ * added before this existed — admin-only until re-added by someone, same
+ * handling as an unowned campaign.
  * ------------------------------------------------------------------------- */
 
 export const watchedSites = pgTable("watched_sites", {
@@ -216,6 +221,7 @@ export const watchedSites = pgTable("watched_sites", {
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   lastCampaignId: uuid("last_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+  createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------

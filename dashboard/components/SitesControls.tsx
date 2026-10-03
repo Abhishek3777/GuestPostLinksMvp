@@ -71,6 +71,47 @@ export function SitesFilters({ counts }: { counts: { all: number; active: number
   );
 }
 
+// Admin-only: "who holds which and how much" — filter the list down to one
+// member's sites, or the legacy unassigned bucket. State lives in the URL,
+// same pattern as SitesFilters.
+export function SitesOwnerFilter({
+  owners,
+  unassignedCount,
+  selected,
+}: {
+  owners: { id: string; email: string; count: number }[];
+  unassignedCount: number;
+  selected?: string;
+}) {
+  const router = useRouter();
+  const params = useSearchParams();
+
+  function onChange(value: string) {
+    const p = new URLSearchParams(params.toString());
+    if (value) p.set("owner", value);
+    else p.delete("owner");
+    p.delete("page");
+    const qs = p.toString();
+    router.push(qs ? `/sites?${qs}` : "/sites");
+  }
+
+  return (
+    <select
+      value={selected ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text outline-none ring-accent/40 focus:ring-2"
+    >
+      <option value="">Everyone&apos;s sites</option>
+      {owners.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.email} ({o.count.toLocaleString()})
+        </option>
+      ))}
+      {unassignedCount > 0 && <option value="unassigned">Added before ownership existed ({unassignedCount.toLocaleString()})</option>}
+    </select>
+  );
+}
+
 // Same format the backend falls back to when no name is given, shown as a
 // placeholder so the field is never blank-feeling even before you type.
 function defaultRunName() {

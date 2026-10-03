@@ -19,6 +19,7 @@ export interface SiteRow {
   crawlStatus: string | null;
   crawlReason: string | null;
   links: number | null;
+  ownerEmail: string | null;
 }
 
 function formatWhen(d: Date | null): string {
@@ -29,7 +30,7 @@ function formatWhen(d: Date | null): string {
 // The table plus row checkboxes and a bulk action bar for exactly the rows
 // you've ticked — separate from SitesBulkActions, which acts on everything the
 // current search/filter shows instead of a manual selection.
-export function SitesTable({ sites }: { sites: SiteRow[] }) {
+export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; showOwner?: boolean }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<"on" | "off" | "delete" | null>(null);
@@ -116,6 +117,7 @@ export function SitesTable({ sites }: { sites: SiteRow[] }) {
               </th>
               <th className="px-5 py-3">Active</th>
               <th className="px-5 py-3">Domain</th>
+              {showOwner && <th className="px-5 py-3">Added by</th>}
               <th className="px-5 py-3">Last run</th>
               <th className="px-5 py-3">Last result</th>
               <th className="px-5 py-3">Backlinks</th>
@@ -143,6 +145,7 @@ export function SitesTable({ sites }: { sites: SiteRow[] }) {
                     <SiteActiveToggle id={s.id} domain={s.domain} active={s.active} />
                   </td>
                   <td className={`px-5 py-3 font-medium ${s.active ? "text-text" : "text-muted"}`}>{s.domain}</td>
+                  {showOwner && <td className="px-5 py-3 text-muted">{s.ownerEmail ?? "— (legacy)"}</td>}
                   <td className="px-5 py-3 text-muted">
                     {s.lastCampaignId ? (
                       <Link href={`/campaigns/${s.lastCampaignId}`} className="hover:text-accent hover:underline">
