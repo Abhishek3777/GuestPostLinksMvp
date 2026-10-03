@@ -18,6 +18,7 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { RunContactStageButton } from "@/components/RunContactStageButton";
 import { PauseResumeButton } from "@/components/PauseResumeButton";
 import { RetryFailedButton } from "@/components/RetryFailedButton";
+import { DeleteCampaignButton } from "@/components/DeleteCampaignButton";
 import { CampaignTabs } from "@/components/CampaignTabs";
 import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 import { DomainStatusSection } from "@/components/DomainStatusSection";
@@ -101,6 +102,9 @@ export default async function CampaignDetailPage({
                 <ExportMenu campaignId={campaign.id} mode={campaign.mode} format="csv" label="Export CSV" />
               </>
             )}
+            {/* Page access already means admin-or-owner (canAccessCampaign above),
+                so no extra role check is needed to show this. */}
+            <DeleteCampaignButton campaignId={campaign.id} campaignName={campaign.name} />
           </div>
         </div>
         {user.role === "admin" && (

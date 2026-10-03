@@ -381,6 +381,22 @@ export async function resumeCampaign(campaignId: string) {
   await db.update(campaigns).set({ paused: false }).where(and(eq(campaigns.id, campaignId), eq(campaigns.paused, true)));
 }
 
+// Every related row (campaign_domains, domain_crawl_status, guest_post_links,
+// guest_post_prospects) cascades automatically at the DB level — deleting the
+// campaign is enough, nothing else needs cleaning up by hand. That also means
+// dedup is unaffected going forward: a domain this campaign had claimed is
+// gone the moment its prospect row is gone, so it's immediately free again
+// for any other campaign, exactly as if this one had never run.
+//
+// Paused first so a still-running worker stops at its next check-in instead
+// of trying to write a result for a campaign that no longer exists — mostly
+// cosmetic (that write would just fail on the foreign key, not corrupt
+// anything), but avoids noisy errors in the worker's logs.
+export async function deleteCampaign(campaignId: string) {
+  await db.update(campaigns).set({ paused: true }).where(eq(campaigns.id, campaignId));
+  await db.delete(campaigns).where(eq(campaigns.id, campaignId));
+}
+
 // Contact statuses worth another try: the site refused us, or the request timed out /
 // failed. Blocks in particular come and go (the same site can pass on one attempt and
 // challenge the next), so a later retry recovers some of them.
