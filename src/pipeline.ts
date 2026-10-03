@@ -3,6 +3,13 @@ import { discoverPosts } from "./discovery/index.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
 import { extractLinksFromPost } from "./extraction/index.js";
 
+// A post with no confirmable date is kept rather than rejected (we can't
+// prove it's old) — but a domain whose posts are ALL undated could otherwise
+// flood a large "posts per domain" setting entirely with unverifiable
+// content. This caps how many undated posts count from any single domain,
+// regardless of how high targetPostCount is set; dated posts are unaffected.
+const MAX_UNDATED_POSTS_PER_DOMAIN = 100;
+
 export interface CrawlDomainOptions {
   days?: number;
   targetPostCount: number; // how many REAL articles we want links from
@@ -69,6 +76,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   const processedPosts: ProcessedPost[] = [];
   let processed = 0;
   let attempted = 0;
+  let undatedProcessed = 0;
 
   for (const post of candidates) {
     if (processed >= opts.targetPostCount) break;
@@ -91,6 +99,34 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
       continue;
     }
 
+    // The real published date read off the page itself (preferred — see
+    // articleSignal.ts) beats whatever discovery guessed beforehand. This is
+    // the actual, final day-window check: discovery-stage filtering only had
+    // an untrustworthy guess (or nothing) to go on, so a post that looked
+    // recent from its sitemap/feed entry can still turn out to be old once
+    // we've read its real publish date — and vice versa. No date found
+    // anywhere means we can't confirm either way, so it's kept rather than
+    // guessed at.
+    const effectiveDate = result.publishedAt ?? post.publishedAt ?? null;
+    if (opts.days && effectiveDate) {
+      const t = new Date(effectiveDate).getTime();
+      const cutoff = Date.now() - opts.days * 24 * 60 * 60 * 1000;
+      if (!Number.isNaN(t) && t < cutoff) {
+        skipped.push({ url: post.url, reason: "too_old" });
+        processedPosts.push({ url: post.url, outcome: "skipped", linksFound: 0 });
+        continue;
+      }
+    }
+
+    if (!effectiveDate) {
+      if (undatedProcessed >= MAX_UNDATED_POSTS_PER_DOMAIN) {
+        skipped.push({ url: post.url, reason: "undated_cap_reached" });
+        processedPosts.push({ url: post.url, outcome: "skipped", linksFound: 0 });
+        continue;
+      }
+      undatedProcessed++;
+    }
+
     processed++;
     processedPosts.push({ url: post.url, outcome: "done", linksFound: result.links.length });
     for (const link of result.links) {
@@ -98,7 +134,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
         guestPostUrl: post.url,
         externalLink: link.externalUrl,
         rootDomain: link.rootDomain,
-        postDate: post.publishedAt ?? null,
+        postDate: effectiveDate,
       });
     }
   }
@@ -112,6 +148,9 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
       no_article_found: "no readable article body (not a blog post, or content is rendered by JavaScript)",
       too_short_not_article: "page too short to be an article",
       not_a_post_page: "WordPress page/archive rather than a post",
+      no_article_signal: "no blog-post markers found (likely FAQ/contact/info page, not an article)",
+      too_old: "published before the requested date window (confirmed from the post's real publish date)",
+      undated_cap_reached: `already reached the ${MAX_UNDATED_POSTS_PER_DOMAIN}-undated-post safety cap for this domain (no reliable date to confirm recency)`,
       link_farm: "link directory / roundup page (too many outbound links to be an article)",
     };
     const breakdown = new Map<string, number>();

@@ -32,10 +32,13 @@ function parseRssOrAtom(xml: string): DiscoveredPost[] {
         const link = Array.isArray(entry.link)
           ? entry.link.find((l: any) => l["@_rel"] !== "self")?.["@_href"] ?? entry.link[0]?.["@_href"]
           : entry.link?.["@_href"];
+        // <published> is the real publish date; <updated> means "last
+        // touched" (Atom requires it on every entry, even for pure edits),
+        // so it's not used as a stand-in when <published> is missing.
         return {
           url: link,
           title: entry.title,
-          publishedAt: entry.updated ?? entry.published ?? null,
+          publishedAt: entry.published ?? null,
         };
       })
       .filter((p) => typeof p.url === "string") as DiscoveredPost[];

@@ -40,19 +40,19 @@ export const contactStatus = pgEnum("contact_status", [
 
 export const userRole = pgEnum("user_role", ["admin", "member"]);
 
-export const groups = pgTable("groups", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  dedupDays: integer("dedup_days").notNull().default(90),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
 export const profiles = pgTable("profiles", {
   id: uuid("id").primaryKey(),
   email: text("email").notNull(),
   role: userRole("role").notNull().default("member"),
-  groupId: uuid("group_id").references(() => groups.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Singleton row (id always 1) holding app-wide settings — currently just the
+// lead re-contact cooldown, which used to be set per-group before dedup
+// became global.
+export const appSettings = pgTable("app_settings", {
+  id: integer("id").primaryKey().default(1),
+  dedupDays: integer("dedup_days").notNull().default(90),
 });
 
 export const campaigns = pgTable("campaigns", {

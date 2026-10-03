@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
 import { Users } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
-import { listGroups, listTeamWithGroups } from "@/services/groups.service";
-import { GroupsManager } from "@/components/GroupsManager";
-import { MemberGroupSelect } from "@/components/MemberGroupSelect";
+import { listTeam } from "@/services/team.service";
+import { getDedupDays } from "@/services/settings.service";
+import { DedupDaysSetting } from "@/components/DedupDaysSetting";
 // Invite form is off for now — internal tool, accounts are seeded directly
 // (dashboard/scripts/bootstrap-admin.mjs). Re-add when invites come back:
 // import { InviteForm } from "@/components/InviteForm";
@@ -14,7 +14,7 @@ export default async function TeamPage() {
   const user = await getCurrentUser();
   if (!user || user.role !== "admin") notFound();
 
-  const [team, groups] = await Promise.all([listTeamWithGroups(), listGroups()]);
+  const [team, dedupDays] = await Promise.all([listTeam(), getDedupDays()]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -25,7 +25,7 @@ export default async function TeamPage() {
         </p>
       </div>
 
-      <GroupsManager groups={groups} />
+      <DedupDaysSetting dedupDays={dedupDays} />
 
       <div className="overflow-hidden rounded-xl border border-border bg-surface">
         <table className="w-full text-sm">
@@ -33,7 +33,6 @@ export default async function TeamPage() {
             <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
               <th className="px-5 py-3">Email</th>
               <th className="px-5 py-3">Role</th>
-              <th className="px-5 py-3">Group</th>
               <th className="px-5 py-3">Added</th>
             </tr>
           </thead>
@@ -49,15 +48,6 @@ export default async function TeamPage() {
                   >
                     {m.role}
                   </span>
-                </td>
-                <td className="px-5 py-3">
-                  {/* Admins see and act on every campaign regardless — a group
-                      assignment on them would have no effect, so it's not offered. */}
-                  {m.role === "admin" ? (
-                    <span className="text-xs text-muted">—</span>
-                  ) : (
-                    <MemberGroupSelect profileId={m.id} currentGroupId={m.groupId} groups={groups} />
-                  )}
                 </td>
                 <td className="px-5 py-3 text-muted">
                   {new Date(m.createdAt).toLocaleDateString(undefined, { timeZone: "Asia/Kolkata" })}

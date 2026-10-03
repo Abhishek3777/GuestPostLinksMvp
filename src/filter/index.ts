@@ -2,14 +2,19 @@ import { sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client.js";
 import {
   findAlreadyFoundDomains,
-  findClaimedByGroupmates,
-  getCampaignGroup,
+  findClaimedGlobally,
+  getDedupDays,
   getCampaignLinks,
   loadDoNotContactSet,
   saveProspects,
   type ProspectInput,
 } from "../db/filterResults.js";
 import { exclusionReason } from "./exclusions.js";
+
+// Fixed, arbitrary key for the global dedup lock — every campaign takes the
+// SAME advisory lock now (dedup is app-wide, not per-group), so this is just
+// a constant rather than something derived per campaign.
+const DEDUP_LOCK_KEY = sql`hashtext('guest-post-dedup')::bigint`;
 
 export interface FilterStageResult {
   totalProspects: number;
@@ -30,14 +35,11 @@ async function decideAndSave(
   candidates: Candidate[],
   doNotContact: Set<string>,
   alreadyFound: Set<string>,
-  group: { groupId: string; dedupDays: number } | null
+  dedupDays: number
 ): Promise<{ prospects: ProspectInput[]; byReason: Record<string, number> }> {
-  // Every run, not just monitoring: a domain a CURRENT group-mate's campaign
-  // already claimed, whether or not contact lookup has even run on it yet.
-  // Ungrouped campaigns have nothing to check — this map stays empty.
-  const claimedByGroupmates = group
-    ? await findClaimedByGroupmates(campaignId, candidates.map((c) => c.rootDomain), group, executor)
-    : new Map<string, Date>();
+  // Every run, not just monitoring: a domain ANY other campaign already
+  // claimed, whether or not contact lookup has even run on it yet.
+  const claimedByOthers = await findClaimedGlobally(campaignId, candidates.map((c) => c.rootDomain), dedupDays, executor);
 
   const byReason: Record<string, number> = {};
   const prospects: ProspectInput[] = candidates.map((c) => {
@@ -46,10 +48,10 @@ async function decideAndSave(
     // "already found" by an older, unrelated campaign.
     const reason =
       exclusionReason(c.rootDomain, doNotContact) ||
-      (claimedByGroupmates.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
+      (claimedByOthers.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
       (alreadyFound.has(c.rootDomain) ? "already_found" : "");
     if (reason) byReason[reason] = (byReason[reason] ?? 0) + 1;
-    return { ...c, exclusionReason: reason || null, claimedAt: claimedByGroupmates.get(c.rootDomain) ?? null };
+    return { ...c, exclusionReason: reason || null, claimedAt: claimedByOthers.get(c.rootDomain) ?? null };
   });
 
   await saveProspects(campaignId, prospects, executor);
@@ -66,24 +68,20 @@ async function filterAndSave(
   const alreadyFound = opts.incremental
     ? await findAlreadyFoundDomains(campaignId, candidates.map((c) => c.rootDomain))
     : new Set<string>();
-  const group = await getCampaignGroup(campaignId);
+  const dedupDays = await getDedupDays();
 
   // The claim-check-then-save above is the one place two campaigns could race:
-  // if two campaigns in the SAME group reach it at the same instant (now
-  // possible once the daemon runs more than one campaign at a time), both
-  // could see a domain as unclaimed before either has saved theirs, and both
-  // would keep it — the exact double-contact risk group dedup exists to
-  // prevent. pg_advisory_xact_lock, keyed to the group, makes same-group
-  // campaigns take a brief turn for just this fast step; every other
-  // campaign — different group, or no group at all — is never blocked by it.
-  // The lock is held for the transaction's lifetime and always releases,
-  // success or failure.
-  const { prospects, byReason } = group
-    ? await db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${group.groupId})::bigint)`);
-        return decideAndSave(tx, campaignId, candidates, doNotContact, alreadyFound, group);
-      })
-    : await decideAndSave(db, campaignId, candidates, doNotContact, alreadyFound, null);
+  // if two campaigns reach it at the same instant (possible once the daemon
+  // runs more than one campaign at a time), both could see a domain as
+  // unclaimed before either has saved theirs, and both would keep it — the
+  // exact double-contact risk dedup exists to prevent. Dedup is now app-wide
+  // (not per-group), so every campaign takes the SAME fixed advisory lock for
+  // just this fast step, one at a time. The lock is held for the
+  // transaction's lifetime and always releases, success or failure.
+  const { prospects, byReason } = await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${DEDUP_LOCK_KEY})`);
+    return decideAndSave(tx, campaignId, candidates, doNotContact, alreadyFound, dedupDays);
+  });
 
   const excluded = prospects.filter((p) => p.exclusionReason).length;
   return { totalProspects: prospects.length, kept: prospects.length - excluded, excluded, byReason };

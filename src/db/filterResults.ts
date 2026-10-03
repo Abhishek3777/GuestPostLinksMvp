@@ -1,6 +1,6 @@
 import { and, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db, type Executor } from "./client.js";
-import { campaigns, doNotContact, groups, guestPostLinks, guestPostProspects, profiles } from "./schema.js";
+import { appSettings, doNotContact, guestPostLinks, guestPostProspects } from "./schema.js";
 
 export async function loadDoNotContactSet(): Promise<Set<string>> {
   const rows = await db.select({ domain: doNotContact.domain }).from(doNotContact);
@@ -48,32 +48,26 @@ export async function findAlreadyFoundDomains(campaignId: string, domains: strin
   return found;
 }
 
-// The dedup-relevant facts about a campaign's owner: which group (if any) and
-// that group's configured cooldown. Split out of findClaimedByGroupmates so
-// the caller (filterAndSave) can decide, BEFORE doing anything else, whether
-// this campaign needs to take the per-group lock at all — ungrouped campaigns
-// skip it entirely, exactly as before.
-export async function getCampaignGroup(campaignId: string): Promise<{ groupId: string; dedupDays: number } | null> {
-  const [owner] = await db
-    .select({ groupId: profiles.groupId, dedupDays: groups.dedupDays })
-    .from(campaigns)
-    .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
-    .innerJoin(groups, eq(groups.id, profiles.groupId))
-    .where(eq(campaigns.id, campaignId));
-  return owner?.groupId ? { groupId: owner.groupId, dedupDays: owner.dedupDays } : null;
+// The app-wide re-contact cooldown (app_settings is a single row, id 1).
+// Falls back to 90 if the row is somehow missing rather than erroring out —
+// matches the field's own DB default, so a missing row behaves the same as
+// a freshly-migrated one.
+const DEFAULT_DEDUP_DAYS = 90;
+
+export async function getDedupDays(): Promise<number> {
+  const [row] = await db.select({ dedupDays: appSettings.dedupDays }).from(appSettings).where(eq(appSettings.id, 1));
+  return row?.dedupDays ?? DEFAULT_DEDUP_DAYS;
 }
 
-// Domains a CURRENT group-mate's campaign has already kept (not excluded) as
-// a prospect, within that group's own configured cooldown window —
-// regardless of whether contact lookup has even run on it yet: being kept is
-// exactly what makes a domain show up in an export, and once it's out the
-// door (fed into FormBlast, etc.) re-finding it and reaching out again reads
-// as spam and risks sender reputation. First campaign to reach this stage
-// claims the domain; every other group-mate's campaign, this run or any
-// later one within the window, excludes it instead. Once the window passes,
-// it's fair game again. Members with no group (or the whole campaign's owner
-// having no group) never dedupe against anyone this way — see the note on
-// guestPostProspects in schema.ts.
+// Domains ANY OTHER campaign (anyone, any group) has already kept (not
+// excluded) as a prospect, within the app-wide cooldown window — regardless
+// of whether contact lookup has even run on it yet: being kept is exactly
+// what makes a domain show up in an export, and once it's out the door (fed
+// into FormBlast, etc.) re-finding it and reaching out again reads as spam
+// and risks sender reputation. First campaign to reach this stage claims the
+// domain; every other campaign, this run or any later one within the
+// window, excludes it instead. Once the window passes, it's fair game
+// again. See the note on guestPostProspects in schema.ts.
 // Returns WHEN each claimed domain was claimed (the claiming row's
 // createdAt), not just whether it was — so callers can say "claimed 31 days
 // ago" instead of a bare label. If a domain has more than one qualifying
@@ -84,10 +78,10 @@ export async function getCampaignGroup(campaignId: string): Promise<{ groupId: s
 // LOCKED transaction here once campaigns can run concurrently — see the
 // pg_advisory_xact_lock in filter/index.ts for why this specific read must
 // happen inside the same lock as the write in saveProspects below.
-export async function findClaimedByGroupmates(
+export async function findClaimedGlobally(
   campaignId: string,
   domains: string[],
-  group: { groupId: string; dedupDays: number },
+  dedupDays: number,
   executor: Executor = db
 ): Promise<Map<string, Date>> {
   const claimed = new Map<string, Date>();
@@ -97,14 +91,11 @@ export async function findClaimedByGroupmates(
     const rows = await executor
       .select({ rootDomain: guestPostProspects.rootDomain, claimedAt: sql<string>`max(${guestPostProspects.createdAt})` })
       .from(guestPostProspects)
-      .innerJoin(campaigns, eq(campaigns.id, guestPostProspects.campaignId))
-      .innerJoin(profiles, eq(profiles.id, campaigns.createdBy))
       .where(
         and(
-          eq(profiles.groupId, group.groupId),
           ne(guestPostProspects.campaignId, campaignId),
           isNull(guestPostProspects.exclusionReason),
-          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${group.dedupDays})`),
+          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${dedupDays})`),
           inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
         )
       )

@@ -51,21 +51,6 @@ export const contactStatus = pgEnum("contact_status", [
 export const userRole = pgEnum("user_role", ["admin", "member"]);
 
 /* ---------------------------------------------------------------------------
- * groups — admin-managed teams. A member's group is who they compete with for
- * leads: see the dedup note on guestPostProspects further down.
- * ------------------------------------------------------------------------- */
-
-export const groups = pgTable("groups", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  // How long a claimed lead stays off-limits to the rest of this group, once
-  // it's kept as a prospect anywhere in it — admin-set, per group, because
-  // different teams/clients may want a different re-contact cooldown.
-  dedupDays: integer("dedup_days").notNull().default(90),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}).enableRLS();
-
-/* ---------------------------------------------------------------------------
  * profiles — one row per dashboard user. `id` is the Supabase auth user's
  * UUID, copied over (not a DB foreign key: auth lives in a different Supabase
  * project than this one, so there is no `auth.users` table to reference here).
@@ -75,10 +60,18 @@ export const profiles = pgTable("profiles", {
   id: uuid("id").primaryKey(),
   email: text("email").notNull(),
   role: userRole("role").notNull().default("member"),
-  // One group at a time, optional. Admins are never in a group — they already
-  // see and can act on every campaign regardless.
-  groupId: uuid("group_id").references(() => groups.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+/* ---------------------------------------------------------------------------
+ * app_settings — a single row (id always 1) of app-wide settings. Currently
+ * just the lead re-contact cooldown, see the dedup note on guestPostProspects
+ * further down — this used to be set per-group before dedup became global.
+ * ------------------------------------------------------------------------- */
+
+export const appSettings = pgTable("app_settings", {
+  id: integer("id").primaryKey().default(1),
+  dedupDays: integer("dedup_days").notNull().default(90),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------
@@ -255,12 +248,12 @@ export const processedPosts = pgTable(
  * prospect row here — that row is what Stage 3 (contact scraping) will
  * eventually work from.
  *
- * Group dedup: the FIRST group-mate whose campaign keeps a given rootDomain
- * here (exclusionReason still null) "claims" it. Any other CURRENT member of
- * the same group whose filter stage later sees that same rootDomain excludes
- * it (reason "claimed_by_teammate") instead of creating a second kept row —
- * see findClaimedByGroupmates in src/db/filterResults.ts. Members in
- * different groups (or no group) never block each other this way.
+ * Global dedup: the FIRST campaign (anyone's, any time) that keeps a given
+ * rootDomain here (exclusionReason still null) "claims" it. Any other
+ * campaign whose filter stage later sees that same rootDomain within the
+ * app-wide cooldown window (app_settings.dedup_days) excludes it (reason
+ * "claimed_by_teammate") instead of creating a second kept row — see
+ * findClaimedGlobally in src/db/filterResults.ts.
  * ------------------------------------------------------------------------- */
 
 export const guestPostProspects = pgTable(
@@ -280,10 +273,10 @@ export const guestPostProspects = pgTable(
     // invalid_domain — see src/filter/exclusions.ts.
     exclusionReason: text("exclusion_reason"),
     // Set only when exclusionReason is "claimed_by_teammate": the OTHER
-    // prospect row's createdAt (when a group-mate's campaign actually claimed
-    // this domain), so the UI/export can say "claimed 31 days ago" computed
-    // fresh at read time, not a string frozen at filter time that would go
-    // stale the moment someone opens the export later.
+    // prospect row's createdAt (when another campaign actually claimed this
+    // domain), so the UI/export can say "claimed 31 days ago" computed fresh
+    // at read time, not a string frozen at filter time that would go stale
+    // the moment someone opens the export later.
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 

@@ -31,14 +31,19 @@ const BROWSER_HEADERS: Record<string, string> = {
 };
 
 // --- Optional upstream proxy -------------------------------------------------
-// Off unless PROXY_URL is set. This routes requests through a rotating
-// proxy pool (e.g. DataImpulse, or any standard HTTP/HTTPS proxy:
-// http://user:pass@host:port) to spread request VOLUME across many outbound
-// IPs, which is a different problem from Cloudflare's interactive human
-// check — an IP alone doesn't get past that (see fetchText's docs). This is
-// for the ordinary case: hitting thousands of unrelated domains from one IP
-// looking like abuse to the domains' own hosts/blocklists, not for defeating
-// any one site's bot-verification.
+// Off unless PROXY_URL is set. Routes through a rotating proxy pool (e.g.
+// DataImpulse, or any standard HTTP/HTTPS proxy: http://user:pass@host:port)
+// to spread request VOLUME across many outbound IPs — for the ordinary case
+// of hitting thousands of unrelated domains from one IP looking like abuse to
+// the domains' own hosts/blocklists, not for defeating any one site's
+// interactive human check (an IP alone doesn't get past that; see
+// browserFetcher/capsolverFetcher for that problem instead).
+//
+// Costs real money per byte transferred, so it's PAID escalation only — same
+// tiered idea as CapSolver below: every request is tried for free first
+// (direct, then curl), and the proxy is only spent on a host once every free
+// option has already failed and it's still blocked. Most domains never need
+// it at all.
 const PROXY_URL = process.env.PROXY_URL;
 const proxyAgent = PROXY_URL
   ? { http: new HttpProxyAgent({ proxy: PROXY_URL }), https: new HttpsProxyAgent({ proxy: PROXY_URL }) }
@@ -49,8 +54,12 @@ export const httpClient = got.extend({
   retry: { limit: 1 },
   headers: { "user-agent": USER_AGENT, ...BROWSER_HEADERS },
   throwHttpErrors: false,
-  ...(proxyAgent ? { agent: proxyAgent } : {}),
 });
+
+// Same client, routed through the proxy — only ever used as a last resort,
+// see fetchTextUnthrottled below. Undefined (never reached) when PROXY_URL
+// isn't set, same as before.
+const httpClientProxied = proxyAgent ? httpClient.extend({ agent: proxyAgent }) : null;
 
 // --- Broken-certificate retry ---------------------------------------------------
 // A surprising number of small business sites run an expired, self-signed or
@@ -114,7 +123,7 @@ export interface FetchResult {
   failedHost?: string;
   // Set when the request only succeeded because a fallback kicked in, so
   // reports can say so instead of silently hiding which sites need it.
-  usedFallback?: "curl" | "public-dns" | "insecure-tls";
+  usedFallback?: "curl" | "public-dns" | "insecure-tls" | "proxy";
   // From a Retry-After header on 429/503: how long the site asked us to wait.
   retryAfterMs?: number;
 }
@@ -233,8 +242,9 @@ async function gotFetch(client: Got, url: string): Promise<FetchResult> {
 // gets challenged on some sites where the system `curl` (a different TLS
 // stack) is let straight through with the identical User-Agent — measured on
 // sooperarticles.com. So when Node is challenged/forbidden we retry ONCE
-// through system curl. No paid service, no browser. Executed without a shell
-// and only for http(s) URLs.
+// through system curl. No paid service, no browser, and deliberately never
+// routed through the proxy either — this is the free fix, tried before the
+// paid one.
 const CURL_BIN = process.platform === "win32" ? "curl.exe" : "curl";
 const CURL_ELIGIBLE = new Set([
   "cloudflare_js_challenge",
@@ -262,9 +272,7 @@ async function curlFetch(url: string): Promise<FetchResult | null> {
         maxBuffer: 25 * 1024 * 1024,
         encoding: "utf8",
         windowsHide: true,
-        // Proxy credentials go through the environment, NOT a -x argument,
-        // so they never show up in the process list.
-        env: PROXY_URL ? { ...process.env, http_proxy: PROXY_URL, https_proxy: PROXY_URL } : process.env,
+        env: process.env,
       }
     );
 
@@ -287,11 +295,18 @@ async function curlFetch(url: string): Promise<FetchResult | null> {
 const hostsNeedingCurl = new Set<string>();
 const hostsNeedingPublicDns = new Set<string>();
 const hostsNeedingInsecureTls = new Set<string>();
+// A host only lands here after EVERY free option already failed on it once —
+// see the end of fetchTextUnthrottled. Skipping straight to the proxy on
+// repeat requests to the same host saves time, not money (the proxy is paid
+// either way once reached), but there's no reason to re-prove the free
+// options don't work for a host that's already shown they don't.
+const hostsNeedingProxy = new Set<string>();
 
 export function fallbackDescription(fallback: FetchResult["usedFallback"]): string | null {
   if (fallback === "curl") return "reachable only via curl fallback (Cloudflare challenges our Node HTTP client)";
   if (fallback === "public-dns") return "reachable only via public-DNS fallback (local resolver failed)";
   if (fallback === "insecure-tls") return "site has an invalid or expired security certificate (page read anyway)";
+  if (fallback === "proxy") return "reachable only through the paid proxy (blocked on every free attempt)";
   return null;
 }
 
@@ -385,6 +400,11 @@ export async function fetchText(url: string): Promise<FetchResult> {
 }
 
 async function fetchTextUnthrottled(url: string, host: string): Promise<FetchResult> {
+  if (hostsNeedingProxy.has(host) && httpClientProxied) {
+    const viaProxy = await gotFetch(httpClientProxied, url);
+    if (viaProxy.ok) return { ...viaProxy, usedFallback: "proxy" };
+  }
+
   if (hostsNeedingCurl.has(host)) {
     const viaCurl = await curlFetch(url);
     if (viaCurl?.ok) return { ...viaCurl, usedFallback: "curl" };
@@ -438,6 +458,19 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
     if (viaCurl?.ok) {
       hostsNeedingCurl.add(host);
       return { ...viaCurl, usedFallback: "curl" };
+    }
+  }
+
+  // Last resort, and the only PAID step in this whole chain: every free
+  // option above has already failed and the host is still blocked. Only
+  // reached once per host (hostsNeedingProxy short-circuits straight here on
+  // repeat requests), and never reached at all for a host the free options
+  // already handle.
+  if (!result.ok && result.errorReason === "blocked" && httpClientProxied) {
+    const viaProxy = await gotFetch(httpClientProxied, url);
+    if (viaProxy.ok) {
+      hostsNeedingProxy.add(host);
+      return { ...viaProxy, usedFallback: "proxy" };
     }
   }
 

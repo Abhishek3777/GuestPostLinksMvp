@@ -14,8 +14,14 @@ function asArray<T>(value: T | T[] | undefined): T[] {
 async function parseUrlset(xml: string): Promise<DiscoveredPost[]> {
   const parsed = parser.parse(xml);
   const entries = asArray<any>(parsed?.urlset?.url);
+  // Deliberately NOT using <lastmod> as publishedAt: it means "page last
+  // touched", not "originally published" — a post edited last week still
+  // shows a fresh lastmod even if it was written months ago. The real
+  // published date gets read directly off the post page later (see
+  // extraction/articleSignal.ts); leaving this null just means "not known
+  // yet", which rankCandidatePosts treats as "don't reject, go find out".
   return entries
-    .map((e) => ({ url: e.loc, publishedAt: e.lastmod ?? null }))
+    .map((e) => ({ url: e.loc, publishedAt: null }))
     .filter((p) => typeof p.url === "string") as DiscoveredPost[];
 }
 
