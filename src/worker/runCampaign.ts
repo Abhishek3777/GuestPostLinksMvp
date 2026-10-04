@@ -9,9 +9,18 @@ import { withTimeout } from "../util.js";
 
 // Hard ceiling on one domain's total crawl time, regardless of how many
 // candidate posts it has to try — see withTimeout in util.ts for why this
-// exists at all. Generous on purpose: a real domain with thousands of
-// sitemap candidates genuinely can need several minutes.
-const PER_DOMAIN_TIMEOUT_MS = 8 * 60_000;
+// exists at all. Started at 8 minutes before the per-host circuit breakers
+// (blocked AND timeout) existed in httpClient.ts; now that those cut a
+// legitimately slow-but-working domain down to under 3 minutes in practice
+// (confirmed live), 8 minutes only ever benefits the truly stuck cases — and
+// actively hurts overall throughput while doing it: with a FIXED number of
+// domains processed at once, every minute a stuck domain keeps its slot is a
+// minute that slot can't pick up any of the many fast domains waiting behind
+// it (confirmed live: domains were clustering into bursts as slots got
+// freed all at once after a batch of stuck ones finally gave up together).
+// Cutting this to 3 minutes frees a stuck domain's slot more than twice as
+// fast, directly reducing that pile-up.
+const PER_DOMAIN_TIMEOUT_MS = 3 * 60_000;
 import {
   getCampaign,
   getCampaignDomains,
