@@ -365,32 +365,76 @@ async function backOffAndRetry(host: string, first: FetchResult, refetch: () => 
 // requests to it just add load to a site that has already said no — and were
 // the exact way mysolutionwellbeing.com went from working to captcha-walling
 // us during testing. So stop asking for a while; report why instead.
+//
+// Blocked and timed-out hosts are tracked SEPARATELY, on purpose, even
+// though both end in the same "stop asking for a while" behavior: a host
+// that's actively blocking us is worth the extra escalation (a real browser
+// sometimes gets past a block — see runCampaign.ts's withBlockedEscalation),
+// but a host that's simply not responding gets nothing out of that — a
+// browser can't make a dead/slow server answer faster, so it would just add
+// an expensive, pointless extra attempt. Keeping errorReason "timeout"
+// (never "blocked") for this case means that expensive escalation path is
+// never mistakenly triggered for a host that was never blocking us at all.
+//
+// This is what actually fixes the slow case: previously a host that timed
+// out on every request paid the FULL 15s wait on every one of up to 50
+// tries (12+ minutes) with no shortcut, because only "blocked" tripped the
+// breaker. Now only the first 3 pay that cost; the rest skip instantly.
 const BLOCK_STREAK_LIMIT = 3;
 const BLOCK_COOLDOWN_MS = 10 * 60_000;
-const blockState = new Map<string, { streak: number; lastAt: number }>();
+const TIMEOUT_STREAK_LIMIT = 3;
+const TIMEOUT_COOLDOWN_MS = 10 * 60_000;
 
-function circuitOpen(host: string): boolean {
-  const s = blockState.get(host);
-  return Boolean(s && s.streak >= BLOCK_STREAK_LIMIT && Date.now() - s.lastAt < BLOCK_COOLDOWN_MS);
+interface HostFailureState {
+  blockedStreak: number;
+  blockedLastAt: number;
+  timeoutStreak: number;
+  timeoutLastAt: number;
+}
+const hostFailureState = new Map<string, HostFailureState>();
+
+function circuitOpen(host: string): "blocked" | "timeout" | null {
+  const s = hostFailureState.get(host);
+  if (!s) return null;
+  if (s.blockedStreak >= BLOCK_STREAK_LIMIT && Date.now() - s.blockedLastAt < BLOCK_COOLDOWN_MS) return "blocked";
+  if (s.timeoutStreak >= TIMEOUT_STREAK_LIMIT && Date.now() - s.timeoutLastAt < TIMEOUT_COOLDOWN_MS) return "timeout";
+  return null;
 }
 
 function recordOutcome(host: string, result: FetchResult) {
   if (result.ok) {
-    blockState.delete(host);
-  } else if (result.errorReason === "blocked") {
-    const s = blockState.get(host) ?? { streak: 0, lastAt: 0 };
-    blockState.set(host, { streak: s.streak + 1, lastAt: Date.now() });
+    hostFailureState.delete(host);
+    return;
   }
+  if (result.errorReason !== "blocked" && result.errorReason !== "timeout") return;
+
+  const s = hostFailureState.get(host) ?? { blockedStreak: 0, blockedLastAt: 0, timeoutStreak: 0, timeoutLastAt: 0 };
+  if (result.errorReason === "blocked") {
+    s.blockedStreak++;
+    s.blockedLastAt = Date.now();
+  } else {
+    s.timeoutStreak++;
+    s.timeoutLastAt = Date.now();
+  }
+  hostFailureState.set(host, s);
 }
 
 export async function fetchText(url: string): Promise<FetchResult> {
   const host = hostOf(url);
 
-  if (circuitOpen(host)) {
+  const openReason = circuitOpen(host);
+  if (openReason === "blocked") {
     return {
       ok: false,
       errorReason: "blocked",
       failureDetail: `skipped_after_${BLOCK_STREAK_LIMIT}_consecutive_blocks (cooling down ${BLOCK_COOLDOWN_MS / 60_000} min)`,
+    };
+  }
+  if (openReason === "timeout") {
+    return {
+      ok: false,
+      errorReason: "timeout",
+      failureDetail: `skipped_after_${TIMEOUT_STREAK_LIMIT}_consecutive_timeouts (site not responding, cooling down ${TIMEOUT_COOLDOWN_MS / 60_000} min)`,
     };
   }
 
