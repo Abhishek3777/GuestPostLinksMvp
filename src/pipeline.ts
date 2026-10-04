@@ -71,6 +71,19 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   );
   const maxAttempts = opts.maxAttempts ?? opts.targetPostCount * 3;
 
+  // targetPostCount * 3 is a reasonable budget when targetPostCount is small
+  // (5-50), but at the "no limit" sentinel (1000) it becomes 3000 attempts —
+  // and a domain that is never going to produce anything (dead site, every
+  // candidate too old, nothing but FAQ/archive pages) burns the FULL budget
+  // at ~2.5s/attempt minimum before giving up. Confirmed live: a single real
+  // domain from one campaign's list ran for 35+ minutes straight with zero
+  // successes before this existed. A domain that hasn't produced a single
+  // real post after a fair sample isn't about to start — cut losses early.
+  // A domain that HAS found even one real post keeps its full budget, since
+  // it's demonstrably worth the continued time (this is what protects a
+  // genuinely high-volume domain from being capped along with the dead ones).
+  const EARLY_GIVE_UP_AFTER_ATTEMPTS = 50;
+
   const rows: CrawlRow[] = [];
   const skipped: { url: string; reason: string; blocked?: boolean }[] = [];
   const processedPosts: ProcessedPost[] = [];
@@ -81,6 +94,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   for (const post of candidates) {
     if (processed >= opts.targetPostCount) break;
     if (attempted >= maxAttempts) break;
+    if (processed === 0 && attempted >= EARLY_GIVE_UP_AFTER_ATTEMPTS) break;
 
     attempted++;
     // No delay here: every request to a host is already spaced by the
@@ -167,7 +181,9 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
       discoverySource: discovery.source,
       reason: allBlocked
         ? `post pages blocked (homepage/${discovery.source} reachable): ${summary}`
-        : `found ${candidates.length} candidate URLs via ${discovery.source}, none usable as articles: ${summary}`,
+        : `found ${candidates.length} candidate URLs via ${discovery.source}` +
+          (attempted < candidates.length ? ` (gave up early after ${attempted} of them, none usable)` : ", none usable as articles") +
+          `: ${summary}`,
       rows,
       postsProcessed: 0,
       postsAttempted: attempted,
