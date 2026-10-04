@@ -2,6 +2,29 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export class TimeoutError extends Error {}
+
+// Hard safety net around a single domain/prospect's worth of work. Every
+// individual network call already has its own timeout (httpClient.ts,
+// browserFetcher, capsolverFetcher), but those only guard ONE request —
+// nothing previously bounded the TOTAL time one domain could consume if
+// something hung in a way no inner timeout caught (confirmed live: two
+// campaigns stalled for 20+ minutes with zero DB activity, no stuck lock, no
+// stuck transaction — meaning something downstream of all the usual timeouts
+// was genuinely stuck). This should have existed from the start for a
+// crawler hitting arbitrary external domains, not added after the fact.
+//
+// The losing side of the race is NOT cancelled (JS can't actually cancel a
+// pending network call) — it keeps running in the background and its result
+// is just discarded, which is fine: it costs that one lingering request, not
+// a permanently blocked worker slot.
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new TimeoutError(`${label}: no result within ${ms / 1000}s`)), ms)),
+  ]);
+}
+
 // Playwright wants proxy auth split out of the URL (a `server` with embedded
 // user:pass in the string is rejected), unlike hpagent in httpClient.ts which
 // takes the whole PROXY_URL as one string.

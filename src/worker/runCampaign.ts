@@ -5,6 +5,13 @@ import { runContactStage } from "./contactStage.js";
 import { makePauseCheck } from "./pauseCheck.js";
 import { updateContactStageStatus } from "../db/contactResults.js";
 import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
+import { withTimeout } from "../util.js";
+
+// Hard ceiling on one domain's total crawl time, regardless of how many
+// candidate posts it has to try — see withTimeout in util.ts for why this
+// exists at all. Generous on purpose: a real domain with thousands of
+// sitemap candidates genuinely can need several minutes.
+const PER_DOMAIN_TIMEOUT_MS = 8 * 60_000;
 import {
   getCampaign,
   getCampaignDomains,
@@ -106,11 +113,15 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
             // One bad domain must never sink the whole campaign: whatever goes
             // wrong here is recorded as THAT domain's result and the rest carry on.
             try {
-              const result = await withBlockedEscalation(domain, {
-                targetPostCount: campaign.targetPostCount,
-                days: campaign.daysWindow ?? undefined,
-                skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
-              });
+              const result = await withTimeout(
+                withBlockedEscalation(domain, {
+                  targetPostCount: campaign.targetPostCount,
+                  days: campaign.daysWindow ?? undefined,
+                  skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
+                }),
+                PER_DOMAIN_TIMEOUT_MS,
+                domain
+              );
               await saveCrawlResult(campaignId, result);
             } catch (err) {
               console.error(`[crawl] ${domain} failed unexpectedly:`, err);

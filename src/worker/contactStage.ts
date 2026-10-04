@@ -1,6 +1,6 @@
 import pLimit from "p-limit";
 import { findContact, type ContactResult } from "../contact/findContact.js";
-import { sleep } from "../util.js";
+import { sleep, withTimeout } from "../util.js";
 import {
   backfillContactEmails,
   getKeptPendingProspects,
@@ -16,6 +16,11 @@ import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueF
 
 // Pure HTTP, lighter per-request than the crawler — no article parsing. Default 8.
 const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
+
+// Same hard ceiling idea as runCampaign.ts's PER_DOMAIN_TIMEOUT_MS, shorter
+// since a contact lookup is lighter than a full crawl — see withTimeout in
+// util.ts for why this exists.
+const PER_PROSPECT_TIMEOUT_MS = 5 * 60_000;
 // Per-host spacing lives in httpClient.ts, so concurrency here only controls
 // how many DIFFERENT sites are being worked on at once.
 
@@ -90,7 +95,7 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
           // One bad site must never sink the whole contact stage: whatever goes
           // wrong is recorded as THAT prospect's result and the rest carry on.
           try {
-            const result = await lookupWithRetry(prospect.rootDomain);
+            const result = await withTimeout(lookupWithRetry(prospect.rootDomain), PER_PROSPECT_TIMEOUT_MS, prospect.rootDomain);
 
             // Where the site really ends up gets the same exclusion rules the
             // prospect itself passed — a redirect to a big brand or a parked page
