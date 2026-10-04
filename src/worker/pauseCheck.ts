@@ -14,9 +14,22 @@ export function makePauseCheck(campaignId: string): () => Promise<boolean> {
   return async () => {
     if (paused) return true;
     if (Date.now() - checkedAt < CACHE_MS) return false;
-    const [row] = await db.select({ paused: campaigns.paused }).from(campaigns).where(eq(campaigns.id, campaignId));
-    checkedAt = Date.now();
-    paused = Boolean(row?.paused);
+    // A transient DB hiccup here must never take down the whole campaign —
+    // this used to be an unguarded query called outside every domain's own
+    // try/catch, so one failed pause-check (confirmed live, under higher
+    // concurrency) threw past everything and flipped the entire campaign to
+    // "failed", even though every individual domain was fine. Treat a failed
+    // check the same as "not paused right now" and just try again next time.
+    try {
+      const [row] = await db.select({ paused: campaigns.paused }).from(campaigns).where(eq(campaigns.id, campaignId));
+      paused = Boolean(row?.paused);
+    } catch (err) {
+      console.error(`[pauseCheck] could not check campaign ${campaignId}, assuming not paused:`, err);
+    } finally {
+      // Set even on failure, so a struggling DB gets the normal cache
+      // interval before we ask again instead of retrying immediately.
+      checkedAt = Date.now();
+    }
     return paused;
   };
 }

@@ -57,6 +57,31 @@ export async function updateContactStageStatus(
   await db.update(campaigns).set({ contactStageStatus: status, ...extra }).where(eq(campaigns.id, campaignId));
 }
 
+// Same idea as recordCampaignCrash in src/db/writeResults.ts, for Stage 3.
+// Something escaped every per-prospect try/catch in runContactStage — retry
+// a few times automatically before leaving it as a genuine "failed" for a
+// human to look at. Always safe to resume: the stage only ever looks up
+// prospects still "pending", so nothing already found gets redone or lost.
+const MAX_AUTO_RETRIES = 3;
+
+export async function recordContactStageCrash(campaignId: string): Promise<"retrying" | "gave_up"> {
+  const [row] = await db
+    .update(campaigns)
+    .set({ failureCount: sql`${campaigns.failureCount} + 1` })
+    .where(eq(campaigns.id, campaignId))
+    .returning({ failureCount: campaigns.failureCount });
+
+  if ((row?.failureCount ?? MAX_AUTO_RETRIES + 1) <= MAX_AUTO_RETRIES) {
+    await db.update(campaigns).set({ contactStageStatus: "queued", paused: false }).where(eq(campaigns.id, campaignId));
+    return "retrying";
+  }
+  await db
+    .update(campaigns)
+    .set({ contactStageStatus: "failed", paused: false, contactStageCompletedAt: new Date() })
+    .where(eq(campaigns.id, campaignId));
+  return "gave_up";
+}
+
 // Picks contact_email for every kept prospect that has a real emailAddress
 // but no pick yet — one batch pass, not per-prospect during the stage's own
 // run (pickEmail is cheap, but there's no reason to run it thousands of times

@@ -103,6 +103,14 @@ export const campaigns = pgTable("campaigns", {
   daysWindow: integer("days_window"), // null = no date cutoff, just targetPostCount
   targetPostCount: integer("target_post_count").notNull(),
   status: campaignStatus("status").notNull().default("queued"),
+  // How many times the crawl stage has crashed on something NOT tied to a
+  // specific domain (every per-domain error already has its own handling —
+  // this only counts something unexpected escaping that, e.g. a transient DB
+  // hiccup). A crash auto-retries a few times before being left as a genuine
+  // "failed" for a human to look at — see recordCampaignCrash in
+  // src/db/writeResults.ts. Resuming never loses progress either way: it
+  // always skips domains already checked, same as any other restart.
+  failureCount: integer("failure_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),

@@ -26,6 +26,7 @@ import {
   getCampaignDomains,
   getCheckedDomains,
   getProcessedPostUrls,
+  recordCampaignCrash,
   saveCrawlResult,
   updateCampaignStatus,
 } from "../db/writeResults.js";
@@ -176,7 +177,8 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
 
     await updateCampaignStatus(campaignId, "completed", { completedAt: new Date() });
   } catch (err) {
-    await updateCampaignStatus(campaignId, "failed", { completedAt: new Date() });
+    const outcome = await recordCampaignCrash(campaignId);
+    console.error(`[worker] campaign ${campaignId} crashed (${outcome}):`, err);
     throw err;
   }
 }

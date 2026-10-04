@@ -4,6 +4,7 @@ import { sleep, withTimeout } from "../util.js";
 import {
   backfillContactEmails,
   getKeptPendingProspects,
+  recordContactStageCrash,
   saveContactExclusion,
   saveContactResult,
   updateContactStageStatus,
@@ -146,7 +147,8 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
     await updateContactStageStatus(campaignId, "completed", { contactStageCompletedAt: new Date() });
     return "completed";
   } catch (err) {
-    await updateContactStageStatus(campaignId, "failed", { contactStageCompletedAt: new Date() });
+    const outcome = await recordContactStageCrash(campaignId);
+    console.error(`[worker] contact stage for campaign ${campaignId} crashed (${outcome}):`, err);
     throw err;
   }
 }

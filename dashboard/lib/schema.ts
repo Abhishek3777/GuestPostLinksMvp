@@ -66,6 +66,7 @@ export const campaigns = pgTable("campaigns", {
   daysWindow: integer("days_window"),
   targetPostCount: integer("target_post_count").notNull(),
   status: campaignStatus("status").notNull().default("queued"),
+  failureCount: integer("failure_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),

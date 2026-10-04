@@ -1,7 +1,36 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts } from "./schema.js";
 import type { CrawlDomainResult } from "../pipeline.js";
+
+// How many times a crawl-stage crash auto-retries before being left as a
+// genuine "failed" status for a human to look at.
+const MAX_AUTO_RETRIES = 3;
+
+// Called from runCampaignWorker's top-level catch — something escaped every
+// per-domain try/catch (a bug, or a transient DB/network hiccup, e.g. the
+// pauseCheck query that used to be unguarded). A campaign should never just
+// sit broken waiting for someone to notice and manually requeue it, so this
+// retries automatically a few times before giving up for real. Resuming is
+// always safe regardless: the crawl loop skips domains already checked, same
+// as any ordinary restart, so no progress is ever lost either way.
+export async function recordCampaignCrash(campaignId: string): Promise<"retrying" | "gave_up"> {
+  const [row] = await db
+    .update(campaigns)
+    .set({ failureCount: sql`${campaigns.failureCount} + 1` })
+    .where(eq(campaigns.id, campaignId))
+    .returning({ failureCount: campaigns.failureCount });
+
+  if ((row?.failureCount ?? MAX_AUTO_RETRIES + 1) <= MAX_AUTO_RETRIES) {
+    await db.update(campaigns).set({ status: "queued", paused: false }).where(eq(campaigns.id, campaignId));
+    return "retrying";
+  }
+  await db
+    .update(campaigns)
+    .set({ status: "failed", paused: false, completedAt: new Date() })
+    .where(eq(campaigns.id, campaignId));
+  return "gave_up";
+}
 
 export async function createCampaign(
   name: string,
