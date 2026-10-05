@@ -7,11 +7,26 @@ import { db } from "./client.js";
 // Claiming is one atomic UPDATE ... FOR UPDATE SKIP LOCKED, so a job can never
 // be handed out twice even if two daemons ever polled at the same moment.
 
+// One heavy job on the worker at a time, full stop. Two campaigns (or a crawl
+// stage and a contact stage) running together both got proven today to starve
+// each other of CPU/RAM/DB connections and inflate the error rate — this was
+// never caught before because MAX_CONCURRENT_CAMPAIGNS lets the daemon run up
+// to 3 campaigns side by side by default, and nothing stopped two "queued"
+// campaigns from both getting claimed into different slots at once (that's
+// exactly how Sangeeta and Ayushi ended up running simultaneously). The guard
+// lives in the claim query itself, not as a higher concurrency knob someone
+// could just turn back up — as long as ANY campaign has status='running' or
+// contact_stage_status='running', no new claim succeeds, regardless of how
+// many slots are polling.
+const NOTHING_ELSE_RUNNING = sql`
+  NOT EXISTS (SELECT 1 FROM campaigns WHERE status = 'running' OR contact_stage_status = 'running')
+`;
+
 export async function claimNextCampaign(): Promise<string | null> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE campaigns SET status = 'running'
     WHERE id = (
-      SELECT id FROM campaigns WHERE status = 'queued' AND paused = false
+      SELECT id FROM campaigns WHERE status = 'queued' AND paused = false AND ${NOTHING_ELSE_RUNNING}
       ORDER BY created_at LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
@@ -24,7 +39,7 @@ export async function claimNextContactStage(): Promise<string | null> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE campaigns SET contact_stage_status = 'running', contact_stage_started_at = now()
     WHERE id = (
-      SELECT id FROM campaigns WHERE contact_stage_status = 'queued' AND paused = false
+      SELECT id FROM campaigns WHERE contact_stage_status = 'queued' AND paused = false AND ${NOTHING_ELSE_RUNNING}
       ORDER BY created_at LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
