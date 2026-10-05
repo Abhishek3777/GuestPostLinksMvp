@@ -1,4 +1,4 @@
-import { fetchText, type Fetcher } from "./httpClient.js";
+import { fetchText, isHostHeavilyRateLimited, type Fetcher } from "./httpClient.js";
 import { discoverPosts } from "./discovery/index.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
 import { extractLinksFromPost } from "./extraction/index.js";
@@ -20,6 +20,16 @@ export interface CrawlDomainOptions {
   // Plain HTTP by default; a local script can pass a real-browser fetcher
   // (see contact/browserFetcher.ts) for domains that challenge plain requests.
   fetcher?: Fetcher;
+  // Absolute Date.now()-style timestamp. A domain with a genuinely huge,
+  // legitimate archive (confirmed live: a real site with 5,000+ real posts,
+  // every one succeeding normally, zero rate-limiting) can never reach a high
+  // targetPostCount within the caller's own outer hard-timeout — it was
+  // always making real progress, just too much real content to finish in
+  // time, and the outer timeout had no choice but to kill the whole promise
+  // and record a generic "error", discarding everything already found. This
+  // lets the loop see its own deadline coming and wrap up gracefully instead,
+  // returning what it actually found as a real result.
+  deadline?: number;
 }
 
 // What happened to a post this run, so it can be remembered for next time.
@@ -90,11 +100,33 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   let processed = 0;
   let attempted = 0;
   let undatedProcessed = 0;
+  let stoppedForRateLimit = false;
+  let stoppedForDeadline = false;
 
   for (const post of candidates) {
+    // Checked first, unconditionally (unlike the other early-exits below,
+    // this one applies even when processed > 0) — a domain that's actively
+    // succeeding still needs to wrap up before the caller's hard timeout
+    // kills it mid-flight.
+    if (opts.deadline && Date.now() >= opts.deadline) {
+      stoppedForDeadline = true;
+      break;
+    }
     if (processed >= opts.targetPostCount) break;
     if (attempted >= maxAttempts) break;
     if (processed === 0 && attempted >= EARLY_GIVE_UP_AFTER_ATTEMPTS) break;
+    // A host that's heavily rate-limiting us (its per-request gap has backed
+    // off well past the normal 2.5s — see isHostHeavilyRateLimited) will only
+    // get slower for every remaining candidate, not better. Grinding through
+    // the rest of a 50-attempt budget at 10-20s/request is how a perfectly
+    // reachable, fast site (opens instantly for a human) still blows the
+    // whole-domain time cap and comes back as a generic "error" — confirmed
+    // live against real production domains. Same "processed === 0" guard as
+    // above: a domain that's already found real posts is worth the wait.
+    if (processed === 0 && isHostHeavilyRateLimited(domain)) {
+      stoppedForRateLimit = true;
+      break;
+    }
 
     attempted++;
     // No delay here: every request to a host is already spaced by the
@@ -157,7 +189,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   // article. Reporting that as a plain "success, 0 posts" hides the real
   // story — e.g. sitemap loads fine but every post page returns 403 — so
   // classify it and say why.
-  if (processed === 0 && attempted > 0) {
+  if (processed === 0 && (attempted > 0 || stoppedForRateLimit || stoppedForDeadline)) {
     const PLAIN: Record<string, string> = {
       no_article_found: "no readable article body (not a blog post, or content is rendered by JavaScript)",
       too_short_not_article: "page too short to be an article",
@@ -179,7 +211,10 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
       domain,
       discoveryStatus: allBlocked ? "blocked" : "no_posts_found",
       discoverySource: discovery.source,
-      reason: allBlocked
+      reason: stoppedForRateLimit
+        ? `found ${candidates.length} candidate URLs via ${discovery.source}, stopped after ${attempted} of them — this host is rate-limiting us heavily (reachable, just can't be crawled at normal speed)` +
+          (summary ? `: ${summary}` : "")
+        : allBlocked
         ? `post pages blocked (homepage/${discovery.source} reachable): ${summary}`
         : `found ${candidates.length} candidate URLs via ${discovery.source}` +
           (attempted < candidates.length ? ` (gave up early after ${attempted} of them, none usable)` : ", none usable as articles") +
@@ -196,10 +231,12 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
     domain,
     discoveryStatus: discovery.status,
     discoverySource: discovery.source,
-    reason:
-      candidates.length === 0 && opts.skipPostUrls?.size
-        ? "no new posts since the last run"
-        : discovery.reason,
+    reason: stoppedForDeadline
+      ? `found ${processed} real post(s) via ${attempted} of ${candidates.length} candidates, stopped to stay inside the time budget (likely more available: a genuinely large/active site, not a failure)` +
+        (discovery.reason ? ` (${discovery.reason})` : "")
+      : candidates.length === 0 && opts.skipPostUrls?.size
+      ? "no new posts since the last run"
+      : discovery.reason,
     rows,
     postsProcessed: processed,
     postsAttempted: attempted,

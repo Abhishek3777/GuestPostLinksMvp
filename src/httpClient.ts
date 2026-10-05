@@ -332,6 +332,18 @@ const hostIntervalMs = new Map<string, number>(); // raised for a host after it 
 const lastRequestDoneAt = new Map<string, number>();
 const hostQueue = new Map<string, Promise<void>>();
 
+// A host that has backed off even once is no longer "2.5s per request" — a
+// caller working through many sequential candidates on the same host (the
+// pipeline's per-domain loop) can use this to stop early once the site has
+// made clear it's rate-limiting us hard, rather than grinding through the
+// rest of its budget at an ever-growing per-request cost. Threshold is "gap
+// has at least doubled twice" (10s, a quarter of the 20s ceiling) — one
+// 429 can be a fluke, a host that's kept re-triggering backoff hasn't been.
+const HEAVY_RATE_LIMIT_THRESHOLD_MS = MIN_HOST_INTERVAL_MS * 4;
+export function isHostHeavilyRateLimited(host: string): boolean {
+  return (hostIntervalMs.get(host) ?? MIN_HOST_INTERVAL_MS) >= HEAVY_RATE_LIMIT_THRESHOLD_MS;
+}
+
 // Runs `work` only after every earlier request to this host has finished AND
 // the host's minimum gap has passed since the last one ended. The gap is
 // measured from when the previous request FINISHED, so a slow response

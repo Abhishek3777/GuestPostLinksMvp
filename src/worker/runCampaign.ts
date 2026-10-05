@@ -142,6 +142,15 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
                 withBlockedEscalation(domain, {
                   targetPostCount: campaign.targetPostCount,
                   days: campaign.daysWindow ?? undefined,
+                  // 30s margin before the outer withTimeout below actually fires —
+                  // enough for one in-flight request to finish and the loop to
+                  // return cleanly, rather than being killed mid-flight. See
+                  // CrawlDomainOptions.deadline for why this exists at all: a
+                  // domain with a genuinely huge legitimate archive (confirmed
+                  // live — a real site, 5,000+ real posts, every one succeeding)
+                  // was always getting externally killed and dumped into generic
+                  // "error" despite actively succeeding the whole time.
+                  deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
                   skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
                 }),
                 PER_DOMAIN_TIMEOUT_MS,
