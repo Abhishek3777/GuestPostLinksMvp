@@ -62,6 +62,18 @@ function errorMessage(err: unknown): string {
 
 const CONCURRENCY = Math.max(1, Number(process.env.CRAWL_CONCURRENCY) || 5);
 
+// The DB pool (src/db/client.ts) caps out at 25 connections. CRAWL_CONCURRENCY
+// can run well above that (35 in prod), which is fine for crawling — most of
+// each domain's time is spent waiting on the target site, not touching the
+// database — but if a batch of slow domains all hit PER_DOMAIN_TIMEOUT_MS at
+// once, that's a burst of simultaneous saves that can exceed the pool and fail
+// outright (confirmed today: a one-off recovery script running the same
+// crawlDomain+save pattern at high concurrency silently lost ~22% of its
+// results this way before this same fix was applied there). Gating the write
+// specifically, separately from crawl concurrency, fixes it without slowing
+// the crawling itself down at all.
+const dbWriteLimit = pLimit(20);
+
 // Park a campaign the user paused part-way: back to "queued" (the claim query skips
 // it while it is paused) with its contact stage reset, so Resume runs the whole job
 // again and it carries on from what is still unfinished — crawl skips domains
@@ -135,20 +147,22 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
                 PER_DOMAIN_TIMEOUT_MS,
                 domain
               );
-              await saveCrawlResult(campaignId, result);
+              await dbWriteLimit(() => saveCrawlResult(campaignId, result));
             } catch (err) {
               console.error(`[crawl] ${domain} failed unexpectedly:`, err);
               try {
-                await saveCrawlResult(campaignId, {
-                  domain,
-                  discoveryStatus: "error",
-                  reason: `unexpected error: ${errorMessage(err)}`,
-                  rows: [],
-                  postsProcessed: 0,
-                  postsAttempted: 0,
-                  skipped: [],
-                  processedPosts: [],
-                });
+                await dbWriteLimit(() =>
+                  saveCrawlResult(campaignId, {
+                    domain,
+                    discoveryStatus: "error",
+                    reason: `unexpected error: ${errorMessage(err)}`,
+                    rows: [],
+                    postsProcessed: 0,
+                    postsAttempted: 0,
+                    skipped: [],
+                    processedPosts: [],
+                  })
+                );
               } catch (saveErr) {
                 // Could not even record it (database trouble). Leave the domain
                 // unchecked: it is picked up again if the campaign is resumed.

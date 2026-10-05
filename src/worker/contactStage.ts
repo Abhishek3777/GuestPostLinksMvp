@@ -18,6 +18,12 @@ import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueF
 // Pure HTTP, lighter per-request than the crawler — no article parsing. Default 8.
 const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
 
+// Same DB-pool reasoning as runCampaign.ts's dbWriteLimit — CONTACT_CONCURRENCY
+// runs at 50 in prod, well above the pool's 25-connection cap, so a burst of
+// lookups finishing together can still overwhelm it even though crawling and
+// contact stages now never run at the same time as each other.
+const dbWriteLimit = pLimit(20);
+
 // Same hard ceiling idea as runCampaign.ts's PER_DOMAIN_TIMEOUT_MS, shorter
 // since a contact lookup is lighter than a full crawl — see withTimeout in
 // util.ts for why this exists.
@@ -85,11 +91,13 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
           // details, so a domain added to the list after the fact never gets emailed
           // or has its contact form looked up.
           if (exclusionReason(prospect.rootDomain, doNotContact) === "do_not_contact") {
-            await saveContactExclusion(
-              prospect.id,
-              "do_not_contact",
-              "on the do-not-contact list (caught before contact lookup)",
-              null
+            await dbWriteLimit(() =>
+              saveContactExclusion(
+                prospect.id,
+                "do_not_contact",
+                "on the do-not-contact list (caught before contact lookup)",
+                null
+              )
             );
             return;
           }
@@ -107,25 +115,29 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
               doNotContact
             );
             if (moved) {
-              await saveContactExclusion(
-                prospect.id,
-                moved.reason,
-                `redirects to / moved to ${moved.destination} (${moved.reason})`,
-                moved.destination
+              await dbWriteLimit(() =>
+                saveContactExclusion(
+                  prospect.id,
+                  moved.reason,
+                  `redirects to / moved to ${moved.destination} (${moved.reason})`,
+                  moved.destination
+                )
               );
             } else {
-              await saveContactResult(prospect.id, result);
+              await dbWriteLimit(() => saveContactResult(prospect.id, result));
             }
           } catch (err) {
             console.error(`[contact] ${prospect.rootDomain} failed unexpectedly:`, err);
             try {
-              await saveContactResult(prospect.id, {
-                status: "error",
-                emailAddress: null,
-                contactFormUrl: null,
-                finalDomain: null,
-                reason: `unexpected error: ${(err instanceof Error ? err.message : String(err)).slice(0, 300)}`,
-              });
+              await dbWriteLimit(() =>
+                saveContactResult(prospect.id, {
+                  status: "error",
+                  emailAddress: null,
+                  contactFormUrl: null,
+                  finalDomain: null,
+                  reason: `unexpected error: ${(err instanceof Error ? err.message : String(err)).slice(0, 300)}`,
+                })
+              );
             } catch (saveErr) {
               // Could not even record it (database trouble): it stays "pending"
               // and is picked up if the stage is resumed.
