@@ -9,18 +9,21 @@ import { withTimeout } from "../util.js";
 
 // Hard ceiling on one domain's total crawl time, regardless of how many
 // candidate posts it has to try — see withTimeout in util.ts for why this
-// exists at all. Started at 8 minutes before the per-host circuit breakers
-// (blocked AND timeout) existed in httpClient.ts; now that those cut a
-// legitimately slow-but-working domain down to under 3 minutes in practice
-// (confirmed live), 8 minutes only ever benefits the truly stuck cases — and
-// actively hurts overall throughput while doing it: with a FIXED number of
-// domains processed at once, every minute a stuck domain keeps its slot is a
-// minute that slot can't pick up any of the many fast domains waiting behind
-// it (confirmed live: domains were clustering into bursts as slots got
-// freed all at once after a batch of stuck ones finally gave up together).
-// Cutting this to 3 minutes frees a stuck domain's slot more than twice as
-// fast, directly reducing that pile-up.
-const PER_DOMAIN_TIMEOUT_MS = 3 * 60_000;
+// exists at all.
+//
+// 3 minutes turned out to be too tight: measured live, a domain that
+// legitimately works through its full 50-try budget (lots of real content,
+// just all older than the requested window) needs ~175-210s even running
+// ALONE with no contention — and at real concurrency, competing with dozens
+// of other domains for the same CPU/memory/network, that same domain takes
+// longer still. The 3-minute cap was cutting off a large share of
+// legitimately-still-working domains before they finished (confirmed: the
+// error rate went UP after lowering this, not down), not just the truly
+// stuck ones it was meant for. 6 minutes gives real margin above the
+// measured ~200s baseline instead of guessing; CRAWL_CONCURRENCY was also
+// lowered (65 -> 35) alongside this, since contention from running too many
+// domains at once was the deeper cause, not just the cap being short.
+const PER_DOMAIN_TIMEOUT_MS = 6 * 60_000;
 import {
   getCampaign,
   getCampaignDomains,
