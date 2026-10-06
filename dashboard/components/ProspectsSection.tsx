@@ -35,6 +35,8 @@ interface Prospect {
   exampleGuestPostUrl: string | null;
   exclusionReason: string | null;
   claimedAt: Date | null;
+  claimedByCampaignName: string | null;
+  claimedByOwnerEmail: string | null;
   contactStatus: string;
   contactReason: string | null;
   emailAddress: string | null;
@@ -205,7 +207,9 @@ export function ProspectsSection({
                         <div className="flex flex-col items-start gap-1">
                           <StatusBadge status={p.exclusionReason} />
                           {p.exclusionReason === "claimed_by_teammate" && p.claimedAt && (
-                            <span className="text-[11px] text-muted">{claimedByTeammateNote(new Date(p.claimedAt))}</span>
+                            <span className="text-[11px] text-muted">
+                              {claimedByTeammateNote(new Date(p.claimedAt), p.claimedByCampaignName, p.claimedByOwnerEmail)}
+                            </span>
                           )}
                         </div>
                       ) : (

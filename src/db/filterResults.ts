@@ -78,29 +78,35 @@ export async function getDedupDays(): Promise<number> {
 // LOCKED transaction here once campaigns can run concurrently — see the
 // pg_advisory_xact_lock in filter/index.ts for why this specific read must
 // happen inside the same lock as the write in saveProspects below.
+export interface ClaimedBy {
+  claimedAt: Date;
+  campaignId: string;
+}
+
 export async function findClaimedGlobally(
   campaignId: string,
   domains: string[],
   dedupDays: number,
   executor: Executor = db
-): Promise<Map<string, Date>> {
-  const claimed = new Map<string, Date>();
+): Promise<Map<string, ClaimedBy>> {
+  const claimed = new Map<string, ClaimedBy>();
   if (domains.length === 0) return claimed;
 
   for (let i = 0; i < domains.length; i += 5000) {
-    const rows = await executor
-      .select({ rootDomain: guestPostProspects.rootDomain, claimedAt: sql<string>`max(${guestPostProspects.createdAt})` })
-      .from(guestPostProspects)
-      .where(
-        and(
-          ne(guestPostProspects.campaignId, campaignId),
-          isNull(guestPostProspects.exclusionReason),
-          gt(guestPostProspects.createdAt, sql`now() - make_interval(days => ${dedupDays})`),
-          inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
-        )
-      )
-      .groupBy(guestPostProspects.rootDomain);
-    for (const r of rows) claimed.set(r.rootDomain, new Date(r.claimedAt));
+    // DISTINCT ON instead of the old GROUP BY + max(): we need the campaign_id
+    // that belongs to that latest claim, not just the timestamp, so the row
+    // itself has to come along rather than being aggregated away.
+    const rows = await executor.execute<{ root_domain: string; created_at: string; campaign_id: string }>(sql`
+      select distinct on (${guestPostProspects.rootDomain}) ${guestPostProspects.rootDomain} as root_domain,
+        ${guestPostProspects.createdAt} as created_at, ${guestPostProspects.campaignId} as campaign_id
+      from ${guestPostProspects}
+      where ${guestPostProspects.campaignId} != ${campaignId}
+        and ${guestPostProspects.exclusionReason} is null
+        and ${guestPostProspects.createdAt} > now() - make_interval(days => ${dedupDays})
+        and ${guestPostProspects.rootDomain} = any(${domains.slice(i, i + 5000)})
+      order by ${guestPostProspects.rootDomain}, ${guestPostProspects.createdAt} desc
+    `);
+    for (const r of rows) claimed.set(r.root_domain, { claimedAt: new Date(r.created_at), campaignId: r.campaign_id });
   }
   return claimed;
 }
@@ -111,6 +117,7 @@ export interface ProspectInput {
   exampleExternalLink: string | null;
   exclusionReason: string | null;
   claimedAt?: Date | null;
+  claimedByCampaignId?: string | null;
 }
 
 export async function saveProspects(campaignId: string, prospects: ProspectInput[], executor: Executor = db) {

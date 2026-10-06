@@ -153,6 +153,7 @@ export const guestPostProspects = pgTable(
     exampleExternalLink: text("example_external_link"),
     exclusionReason: text("exclusion_reason"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    claimedByCampaignId: uuid("claimed_by_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     contactStatus: contactStatus("contact_status").notNull().default("pending"),
     emailAddress: text("email_address"),

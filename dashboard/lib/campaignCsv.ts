@@ -31,6 +31,8 @@ export interface CsvProspectRow {
   // campaign actually claimed it, so the day-count below is computed fresh
   // whenever this is read, not frozen at filter time.
   claimedAt: Date | null;
+  claimedByCampaignName: string | null;
+  claimedByOwnerEmail: string | null;
   contactStatus: string;
   contactReason: string | null;
   emailAddress: string | null;
@@ -39,13 +41,15 @@ export interface CsvProspectRow {
   contactCheckedAt: Date | null;
 }
 
-// "claimed by a teammate 31 days ago" — the exact wording a salesperson needs
-// to trust the exclusion is a real business rule, not a bug, without exposing
-// who claimed it or which campaign.
-export function claimedByTeammateNote(claimedAt: Date): string {
+// "claimed by a teammate 31 days ago (Sangeeta 3 Oct, sangeeta.acgdm@gmail.com)"
+// — who and which campaign, so you know exactly who to ask about it. Falls
+// back to the old unattributed wording for rows from before this was tracked
+// (claimedByCampaignId is null on anything claimed before this column existed).
+export function claimedByTeammateNote(claimedAt: Date, campaignName: string | null, ownerEmail: string | null): string {
   const days = Math.max(0, Math.floor((Date.now() - claimedAt.getTime()) / 86_400_000));
   const when = days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  return `claimed by a teammate ${when}`;
+  const who = [campaignName, ownerEmail].filter(Boolean).join(", ");
+  return `claimed by a teammate ${when}` + (who ? ` (${who})` : "");
 }
 
 export interface CampaignCsvInput {
@@ -205,7 +209,10 @@ function contactCells(p: CsvProspectRow | undefined, contactRan: boolean) {
   }
   // Contact data only exists for kept prospects that were actually checked.
   const found = p && !excluded && p.contactCheckedAt ? p : null;
-  const claimNote = p?.exclusionReason === "claimed_by_teammate" && p.claimedAt ? claimedByTeammateNote(p.claimedAt) : null;
+  const claimNote =
+    p?.exclusionReason === "claimed_by_teammate" && p.claimedAt
+      ? claimedByTeammateNote(p.claimedAt, p.claimedByCampaignName, p.claimedByOwnerEmail)
+      : null;
   return {
     decision: p ? (p.exclusionReason ?? "kept") : "",
     status,

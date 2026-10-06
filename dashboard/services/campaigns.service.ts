@@ -1,4 +1,5 @@
-import { and, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import { and, desc, eq, getTableColumns, gt, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { computeCampaignEta, type CampaignEta, type Events } from "@/lib/campaignEta";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, guestPostProspects, profiles } from "@/lib/schema";
@@ -242,10 +243,20 @@ export async function getCampaignProspectsPage(
   if (opts.search) conditions.push(ilike(guestPostProspects.rootDomain, `%${opts.search}%`));
   const where = and(...conditions);
 
+  // Bounded to one page (≤50 rows), so a left join for the claiming campaign's
+  // name/owner is cheap here — no need for the full export's separate lookup.
+  const claimerCampaigns = alias(campaigns, "claimer_campaigns");
+  const claimerProfiles = alias(profiles, "claimer_profiles");
   const [rows, [{ total }]] = await Promise.all([
     db
-      .select()
+      .select({
+        ...getTableColumns(guestPostProspects),
+        claimedByCampaignName: claimerCampaigns.name,
+        claimedByOwnerEmail: claimerProfiles.email,
+      })
       .from(guestPostProspects)
+      .leftJoin(claimerCampaigns, eq(guestPostProspects.claimedByCampaignId, claimerCampaigns.id))
+      .leftJoin(claimerProfiles, eq(claimerCampaigns.createdBy, claimerProfiles.id))
       .where(where)
       .orderBy(desc(guestPostProspects.createdAt))
       .limit(ROWS_PAGE_SIZE)
@@ -267,7 +278,13 @@ export async function getCampaignDetail(id: string, opts: { domainPage?: number;
   const [domainStatusesPage, domainStatusCounts, [{ linksCount }], [{ totalDomains }]] = await Promise.all([
     getCampaignDomainStatusesPage(id, { page: opts.domainPage, status: opts.domainStatus, search: opts.domainSearch }),
     getCampaignDomainStatusCounts(id),
-    db.select({ linksCount: sql<number>`count(*)::int` }).from(guestPostLinks).where(eq(guestPostLinks.campaignId, id)),
+    // Unique backlink DOMAINS, not raw link rows — the same domain can show up
+    // in many articles, and a sales/marketing reader cares about distinct
+    // opportunities, not how many times one was mentioned.
+    db
+      .select({ linksCount: sql<number>`count(distinct ${guestPostLinks.rootDomain})::int` })
+      .from(guestPostLinks)
+      .where(eq(guestPostLinks.campaignId, id)),
     db.select({ totalDomains: sql<number>`count(*)::int` }).from(campaignDomains).where(eq(campaignDomains.campaignId, id)),
   ]);
 
@@ -298,7 +315,29 @@ export async function getCampaignExportData(id: string) {
   ]);
 
   const domains = domainRows.map((r) => r.domain).sort();
-  return { campaign, domainStatuses, links, prospects, domains, totalDomains: domains.length };
+
+  // Who actually holds a "claimed_by_teammate" exclusion — one extra lookup,
+  // only for the (usually small) set of campaigns that show up as a claimer,
+  // not one query per prospect row.
+  const claimerIds = [...new Set(prospects.map((p) => p.claimedByCampaignId).filter((v): v is string => v !== null))];
+  const claimers = claimerIds.length
+    ? await db
+        .select({ id: campaigns.id, name: campaigns.name, ownerEmail: profiles.email })
+        .from(campaigns)
+        .leftJoin(profiles, eq(campaigns.createdBy, profiles.id))
+        .where(inArray(campaigns.id, claimerIds))
+    : [];
+  const claimerById = new Map(claimers.map((c) => [c.id, c]));
+  const prospectsWithClaimer = prospects.map((p) => {
+    const claimer = p.claimedByCampaignId ? claimerById.get(p.claimedByCampaignId) : undefined;
+    return {
+      ...p,
+      claimedByCampaignName: claimer?.name ?? null,
+      claimedByOwnerEmail: claimer?.ownerEmail ?? null,
+    };
+  });
+
+  return { campaign, domainStatuses, links, prospects: prospectsWithClaimer, domains, totalDomains: domains.length };
 }
 
 export async function createCampaign(opts: {

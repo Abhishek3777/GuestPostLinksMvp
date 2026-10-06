@@ -51,7 +51,13 @@ async function decideAndSave(
       (claimedByOthers.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
       (alreadyFound.has(c.rootDomain) ? "already_found" : "");
     if (reason) byReason[reason] = (byReason[reason] ?? 0) + 1;
-    return { ...c, exclusionReason: reason || null, claimedAt: claimedByOthers.get(c.rootDomain) ?? null };
+    const claim = claimedByOthers.get(c.rootDomain);
+    return {
+      ...c,
+      exclusionReason: reason || null,
+      claimedAt: claim?.claimedAt ?? null,
+      claimedByCampaignId: claim?.campaignId ?? null,
+    };
   });
 
   await saveProspects(campaignId, prospects, executor);

@@ -292,6 +292,13 @@ export const guestPostProspects = pgTable(
     // at read time, not a string frozen at filter time that would go stale
     // the moment someone opens the export later.
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // Which campaign actually holds the claim (its owner is who to ask) — set
+    // alongside claimedAt, same "claimed_by_teammate" moment. Nullable because
+    // existing rows predate this column; backfilled once, best-effort, by
+    // matching rootDomain + claimedAt against another campaign's prospect
+    // createdAt (see the one-off backfill script, not a migration that runs
+    // every deploy).
+    claimedByCampaignId: uuid("claimed_by_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 
     // --- Stage 3 (contact scraping) fields, filled in after the fact ---

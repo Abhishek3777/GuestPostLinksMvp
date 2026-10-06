@@ -130,7 +130,7 @@ export default async function CampaignDetailPage({
           <StatCard label="Domains given" value={totalDomains} icon={Globe} tone="info" />
           <StatCard label="Visitable, no bypass" value={successCount} icon={CheckCircle2} tone="success" />
           <StatCard label="Couldn't bypass" value={blockedCount} icon={ShieldAlert} tone={blockedCount ? "warning" : "neutral"} />
-          <StatCard label="Links found" value={linksCount} icon={Link2} tone="success" />
+          <StatCard label="Unique backlink domains" value={linksCount} icon={Link2} tone="success" />
         </div>
       )}
 
