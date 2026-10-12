@@ -131,6 +131,14 @@ export const doNotContact = pgTable("do_not_contact", {
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const domainRelevanceCache = pgTable("domain_relevance_cache", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domain: text("domain").notNull().unique(),
+  decision: text("decision").notNull(),
+  reason: text("reason"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const watchedSites = pgTable("watched_sites", {
   id: uuid("id").primaryKey().defaultRandom(),
   domain: text("domain").notNull().unique(),

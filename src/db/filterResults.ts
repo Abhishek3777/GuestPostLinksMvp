@@ -93,6 +93,12 @@ export async function findClaimedGlobally(
   if (domains.length === 0) return claimed;
 
   for (let i = 0; i < domains.length; i += 5000) {
+    // `= any(${array})` interpolates a plain JS array as individual bound
+    // parameters, not a real Postgres array literal — fails outright with
+    // "op ANY/ALL (array) requires array on right side" (confirmed live,
+    // 2026-10-12). sql.join + IN (...) is the pattern already proven
+    // elsewhere in this session for the same class of query.
+    const domainList = sql.join(domains.slice(i, i + 5000).map((d) => sql`${d}`), sql`, `);
     // DISTINCT ON instead of the old GROUP BY + max(): we need the campaign_id
     // that belongs to that latest claim, not just the timestamp, so the row
     // itself has to come along rather than being aggregated away.
@@ -103,7 +109,7 @@ export async function findClaimedGlobally(
       where ${guestPostProspects.campaignId} != ${campaignId}
         and ${guestPostProspects.exclusionReason} is null
         and ${guestPostProspects.createdAt} > now() - make_interval(days => ${dedupDays})
-        and ${guestPostProspects.rootDomain} = any(${domains.slice(i, i + 5000)})
+        and ${guestPostProspects.rootDomain} in (${domainList})
       order by ${guestPostProspects.rootDomain}, ${guestPostProspects.createdAt} desc
     `);
     for (const r of rows) claimed.set(r.root_domain, { claimedAt: new Date(r.created_at), campaignId: r.campaign_id });

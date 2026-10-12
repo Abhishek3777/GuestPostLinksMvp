@@ -31,6 +31,11 @@ export interface ContactResult {
   // Email/Contact Form cell is never unexplained. Also lists any emails that
   // were found but not kept.
   reason: string | null;
+  // The homepage HTML this function already fetched — exposed so the caller
+  // (contactStage.ts) can run the gambling/institutional/relevance checks
+  // against it without a second fetch of the same page. Null whenever the
+  // homepage itself never loaded (the early-return failure case below).
+  homepageHtml: string | null;
 }
 
 function stripWww(hostname: string): string {
@@ -78,6 +83,7 @@ export async function findContact(domain: string, fetcher: Fetcher = fetchText):
       emailAddress: null,
       contactFormUrl: null,
       finalDomain: null,
+      homepageHtml: null,
       reason: !triedWww
         ? `homepage: ${detail}`
         : bareDetail === detail
@@ -212,6 +218,7 @@ export async function findContact(domain: string, fetcher: Fetcher = fetchText):
     contactFormUrl,
     finalDomain: redirectedTo,
     successorDomain,
+    homepageHtml: homepage.body ?? null,
     reason: notes.length ? notes.join("; ") : null,
   };
 }

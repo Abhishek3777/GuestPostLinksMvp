@@ -12,8 +12,34 @@ import {
 import { loadDoNotContactSet } from "../db/filterResults.js";
 import { destinationExclusion } from "../contact/destination.js";
 import { exclusionReason } from "../filter/exclusions.js";
+import { contentLooksLikeGambling } from "../filter/gambling.js";
+import { looksLikeGovOrInstitutional } from "../filter/institutional.js";
+import { looksLikeScholarshipDomain, classifyBusinessRelevanceCached } from "../filter/businessRelevance.js";
 import { makePauseCheck } from "./pauseCheck.js";
 import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
+
+// The three new checks from docs/prospect-relevance-filter.md, run in this
+// order against the homepage Stage 3 just fetched anyway (no extra crawl):
+// gambling and institutional are cheap/deterministic so they go first;
+// the scholarship keyword is a free pre-filter for the AI step; the AI call
+// itself (cached per domain — see domain_relevance_cache) only runs if
+// nothing else already decided it. Returns null when nothing fires (keep
+// as a normal prospect, no change from today's behavior).
+async function checkRelevance(rootDomain: string, homepageHtml: string): Promise<{ reason: string; note: string } | null> {
+  if (contentLooksLikeGambling(homepageHtml)) {
+    return { reason: "gambling_content", note: "homepage content reads as gambling/casino" };
+  }
+  if (looksLikeGovOrInstitutional(rootDomain, homepageHtml)) {
+    return { reason: "government_or_institutional", note: "looks like a government or financial-institution site" };
+  }
+  if (looksLikeScholarshipDomain(rootDomain)) {
+    return { reason: "not_a_business", note: "domain name signals a scholarship/memorial page, not a business" };
+  }
+  const { decision, reason } = await classifyBusinessRelevanceCached(rootDomain, homepageHtml);
+  if (decision === "exclude") return { reason: "not_a_business", note: reason };
+  if (decision === "unsure") return { reason: "needs_review", note: reason };
+  return null;
+}
 
 // Pure HTTP, lighter per-request than the crawler — no article parsing. Default 8.
 const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
@@ -106,6 +132,19 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
           try {
             const result = await withTimeout(lookupWithRetry(prospect.rootDomain), PER_PROSPECT_TIMEOUT_MS, prospect.rootDomain);
 
+            // Gambling / government-institutional / "is this actually a
+            // business" — checked against the homepage we already have in
+            // hand, before anything else. See checkRelevance above.
+            if (result.homepageHtml !== null) {
+              const relevance = await checkRelevance(prospect.rootDomain, result.homepageHtml);
+              if (relevance) {
+                await dbWriteLimit(() =>
+                  saveContactExclusion(prospect.id, relevance.reason, relevance.note, result.finalDomain)
+                );
+                return;
+              }
+            }
+
             // Where the site really ends up gets the same exclusion rules the
             // prospect itself passed — a redirect to a big brand or a parked page
             // is not a lead.
@@ -135,6 +174,7 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
                   emailAddress: null,
                   contactFormUrl: null,
                   finalDomain: null,
+                  homepageHtml: null,
                   reason: `unexpected error: ${(err instanceof Error ? err.message : String(err)).slice(0, 300)}`,
                 })
               );

@@ -210,6 +210,27 @@ export const doNotContact = pgTable("do_not_contact", {
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------
+ * domain_relevance_cache — "is this an actual business worth contacting"
+ * (src/filter/businessRelevance.ts), keyed by domain, not by campaign. Same
+ * reasoning as do_not_contact above: the judgment is a fact about the
+ * domain, not about any one campaign, so it's checked once here and reused
+ * by every future campaign that finds the same domain, instead of paying
+ * for (and waiting on) an OpenAI call every time. No expiry by design — the
+ * one real drift risk (a domain's content changing, e.g. getting hijacked
+ * into gambling spam) is already covered live, every visit, by the
+ * separate gambling/institutional checks, which are deliberately NOT
+ * cached. See docs/prospect-relevance-filter.md.
+ * ------------------------------------------------------------------------- */
+
+export const domainRelevanceCache = pgTable("domain_relevance_cache", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domain: text("domain").notNull().unique(),
+  decision: text("decision").notNull(), // "keep" | "exclude" | "unsure"
+  reason: text("reason"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+/* ---------------------------------------------------------------------------
  * watched_sites — the standing list of guest-post sites to keep monitoring
  * ("Sites to monitor" in the dashboard). Unlike a campaign's one-off upload this
  * persists: sites are switched active/paused, and "Run active sites" turns the
