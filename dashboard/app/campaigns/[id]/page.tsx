@@ -40,28 +40,32 @@ export default async function CampaignDetailPage({
   const { dpage, dstatus, dsearch, ppage, preason, psearch } = await searchParams;
   const domainPage = Math.max(1, Number(dpage) || 1);
 
-  const detail = await getCampaignDetail(id, { domainPage, domainStatus: dstatus, domainSearch: dsearch || undefined });
+  // The Stage 2 prospect breakdown/table only ever shows here BEFORE contact stage
+  // starts — once it does, this moves to its own tab (see CampaignTabs). These three
+  // only need `id`, not each other, so they run together instead of stacking.
+  const [detail, reasonCounts, retryableCount] = await Promise.all([
+    getCampaignDetail(id, { domainPage, domainStatus: dstatus, domainSearch: dsearch || undefined }),
+    getCampaignProspectReasonCounts(id),
+    getCampaignRetryableCount(id),
+  ]);
   if (!detail) notFound();
 
   const { campaign, domainStatuses, domainStatusesTotal, domainStatusesPageCount, domainStatusCounts, linksCount, totalDomains } = detail;
 
   const contactStageStarted = campaign.contactStageStatus !== "not_started";
-  const ownerEmail = user.role === "admin" ? await getCampaignOwnerEmail(campaign.createdBy) : null;
-  const eta = (await getCampaignEtas([campaign])).get(campaign.id) ?? { kind: "none" as const };
 
-  // The Stage 2 prospect breakdown/table only ever shows here BEFORE contact stage
-  // starts — once it does, this moves to its own tab (see CampaignTabs).
-  const [reasonCounts, retryableCount] = await Promise.all([
-    getCampaignProspectReasonCounts(id),
-    getCampaignRetryableCount(id),
+  const [ownerEmail, etaMap, prospectsPage] = await Promise.all([
+    user.role === "admin" ? getCampaignOwnerEmail(campaign.createdBy) : Promise.resolve(null),
+    getCampaignEtas([campaign]),
+    !contactStageStarted
+      ? getCampaignProspectsPage(id, {
+          page: Math.max(1, Number(ppage) || 1),
+          reason: preason || undefined,
+          search: psearch || undefined,
+        })
+      : Promise.resolve(null),
   ]);
-  const prospectsPage = !contactStageStarted
-    ? await getCampaignProspectsPage(id, {
-        page: Math.max(1, Number(ppage) || 1),
-        reason: preason || undefined,
-        search: psearch || undefined,
-      })
-    : null;
+  const eta = etaMap.get(campaign.id) ?? { kind: "none" as const };
 
   const keptCount = reasonCounts.find((r) => r.reason === null)?.count ?? 0;
   const totalProspects = reasonCounts.reduce((sum, r) => sum + r.count, 0);

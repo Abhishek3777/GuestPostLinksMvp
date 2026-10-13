@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { profiles } from "./schema";
@@ -16,7 +17,11 @@ export interface CurrentUser {
 // profile shouldn't normally happen. Falls back to "member" rather than
 // crashing if it ever does (a locked-out admin is worse than an
 // over-cautious member).
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+//
+// Wrapped in React's cache() — every page/layout/API route on a given
+// request calls this, and without caching each call was a separate network
+// round trip to Supabase's auth server (plus a DB query), 2-3x per request.
+async function getCurrentUserUncached(): Promise<CurrentUser | null> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -30,3 +35,5 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     role: profile?.role ?? "member",
   };
 }
+
+export const getCurrentUser = cache(getCurrentUserUncached);

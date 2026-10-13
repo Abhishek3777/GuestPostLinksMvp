@@ -101,7 +101,10 @@ export const domainCrawlStatus = pgTable(
     postsProcessed: integer("posts_processed").notNull().default(0),
     checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("domain_crawl_status_campaign_domain_idx").on(t.campaignId, t.domain)]
+  (t) => [
+    uniqueIndex("domain_crawl_status_campaign_domain_idx").on(t.campaignId, t.domain),
+    index("domain_crawl_status_campaign_checked_idx").on(t.campaignId, t.checkedAt),
+  ]
 );
 
 export const guestPostLinks = pgTable(
@@ -173,7 +176,10 @@ export const guestPostProspects = pgTable(
     contactReason: text("contact_reason"),
     contactCheckedAt: timestamp("contact_checked_at", { withTimezone: true }),
   },
-  (t) => [uniqueIndex("guest_post_prospects_campaign_domain_idx").on(t.campaignId, t.rootDomain)]
+  (t) => [
+    uniqueIndex("guest_post_prospects_campaign_domain_idx").on(t.campaignId, t.rootDomain),
+    index("guest_post_prospects_campaign_created_idx").on(t.campaignId, t.createdAt),
+  ]
 );
 
 export const campaignsRelations = relations(campaigns, ({ many }) => ({

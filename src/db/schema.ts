@@ -163,6 +163,7 @@ export const domainCrawlStatus = pgTable(
     // Re-checking the same domain in the same campaign updates this one row
     // instead of piling up duplicates — needed for resumable runs.
     uniqueIndex("domain_crawl_status_campaign_domain_idx").on(t.campaignId, t.domain),
+    index("domain_crawl_status_campaign_checked_idx").on(t.campaignId, t.checkedAt),
   ]
 ).enableRLS();
 
@@ -336,7 +337,10 @@ export const guestPostProspects = pgTable(
     contactReason: text("contact_reason"), // WHY it failed / came back partial — see findContact.ts
     contactCheckedAt: timestamp("contact_checked_at", { withTimezone: true }),
   },
-  (t) => [uniqueIndex("guest_post_prospects_campaign_domain_idx").on(t.campaignId, t.rootDomain)]
+  (t) => [
+    uniqueIndex("guest_post_prospects_campaign_domain_idx").on(t.campaignId, t.rootDomain),
+    index("guest_post_prospects_campaign_created_idx").on(t.campaignId, t.createdAt),
+  ]
 ).enableRLS();
 
 /* ---------------------------------------------------------------------------
