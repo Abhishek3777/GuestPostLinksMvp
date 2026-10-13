@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "./client.js";
 import { campaigns, guestPostProspects } from "./schema.js";
 import type { ContactResult } from "../contact/findContact.js";
@@ -15,6 +15,26 @@ export async function getKeptPendingProspects(campaignId: string) {
         eq(guestPostProspects.contactStatus, "pending")
       )
     );
+}
+
+// Puts failed Stage 3 lookups back in the queue so the end-of-campaign
+// recovery pass (runCampaign.ts) retries exactly those — not the ones that
+// already resolved (has_email, form_only, no_contact_found, blocked).
+// Returns how many were reset, so the caller can skip re-running the contact
+// stage entirely when there's nothing to recover.
+export async function resetFailedContacts(campaignId: string): Promise<number> {
+  const rows = await db
+    .update(guestPostProspects)
+    .set({ contactStatus: "pending", contactReason: null, contactCheckedAt: null })
+    .where(
+      and(
+        eq(guestPostProspects.campaignId, campaignId),
+        isNull(guestPostProspects.exclusionReason),
+        inArray(guestPostProspects.contactStatus, ["timeout", "dns_error", "error"])
+      )
+    )
+    .returning({ id: guestPostProspects.id });
+  return rows.length;
 }
 
 export async function saveContactResult(prospectId: string, result: ContactResult) {

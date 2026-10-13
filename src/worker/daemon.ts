@@ -2,7 +2,7 @@ import { claimNextCampaign, claimNextContactStage, requeueInterruptedJobs } from
 import { sleep } from "../util.js";
 import { runCampaignWorker } from "./runCampaign.js";
 import { runContactStage } from "./contactStage.js";
-import { updateContactStageStatus } from "../db/contactResults.js";
+import { resetFailedContacts, updateContactStageStatus } from "../db/contactResults.js";
 import { closeRescueFetchers } from "../rescueFetchers.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs several at
@@ -43,7 +43,18 @@ async function runNextJob(slot: number): Promise<boolean> {
   if (contactCampaignId) {
     console.log(`[worker:${slot}] contact stage for campaign ${contactCampaignId}`);
     try {
-      const outcome = await runContactStage(contactCampaignId);
+      let outcome = await runContactStage(contactCampaignId);
+      // Same end-of-campaign recovery as the full pipeline (runCampaign.ts) —
+      // this is the manual "Run Contact Stage" path, which is its own way a
+      // campaign "ends" and deserves the same automatic retry of failed
+      // lookups rather than requiring a human to redo it by hand.
+      if (outcome !== "paused") {
+        const resetCount = await resetFailedContacts(contactCampaignId);
+        if (resetCount > 0) {
+          console.log(`[worker:${slot}] retrying ${resetCount} previously-failed contact lookup(s) for campaign ${contactCampaignId}`);
+          outcome = await runContactStage(contactCampaignId);
+        }
+      }
       if (outcome === "paused") {
         // Back in the contact queue; the claim query skips it until Resume.
         await updateContactStageStatus(contactCampaignId, "queued");

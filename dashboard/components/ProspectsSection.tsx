@@ -16,6 +16,7 @@ const REASON_LABEL: Record<string, string> = {
   parked_domain: "Parked domain",
   url_shortener: "URL shortener",
   invalid_domain: "Invalid domain",
+  redirected: "Redirected",
 };
 
 const CONTACT_FILTER_LABEL: Record<ContactFilterKey, string> = {

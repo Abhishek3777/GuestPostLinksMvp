@@ -28,11 +28,13 @@ import {
   getCampaign,
   getCampaignDomains,
   getCheckedDomains,
+  getDomainsByStatus,
   getProcessedPostUrls,
   recordCampaignCrash,
   saveCrawlResult,
   updateCampaignStatus,
 } from "../db/writeResults.js";
+import { resetFailedContacts } from "../db/contactResults.js";
 
 // A domain the plain HTTP client found "blocked" gets one more try from here,
 // through a real browser and (if that's still not enough) CapSolver — same
@@ -62,17 +64,21 @@ function errorMessage(err: unknown): string {
 
 const CONCURRENCY = Math.max(1, Number(process.env.CRAWL_CONCURRENCY) || 5);
 
-// The DB pool (src/db/client.ts) caps out at 25 connections. CRAWL_CONCURRENCY
-// can run well above that (35 in prod), which is fine for crawling — most of
-// each domain's time is spent waiting on the target site, not touching the
+// The DB pool (src/db/client.ts) caps out at 10 connections — lowered from 25
+// on 2026-10-13 because Supabase's own pooler only hands out 15 real
+// connections total, shared with the dashboard (4) and some headroom for
+// ad-hoc scripts; the worker alone requesting 25 was starving the dashboard
+// whenever a campaign was actively running. CRAWL_CONCURRENCY can still run
+// well above 10 (35 in prod), which is fine for crawling — most of each
+// domain's time is spent waiting on the target site, not touching the
 // database — but if a batch of slow domains all hit PER_DOMAIN_TIMEOUT_MS at
-// once, that's a burst of simultaneous saves that can exceed the pool and fail
-// outright (confirmed today: a one-off recovery script running the same
-// crawlDomain+save pattern at high concurrency silently lost ~22% of its
-// results this way before this same fix was applied there). Gating the write
-// specifically, separately from crawl concurrency, fixes it without slowing
-// the crawling itself down at all.
-const dbWriteLimit = pLimit(20);
+// once, that's a burst of simultaneous saves that needs to stay well under
+// the pool size or it fails outright (confirmed: a one-off recovery script
+// running the same crawlDomain+save pattern at high concurrency silently
+// lost ~22% of its results this way before this same fix was applied
+// there). Gating the write specifically, separately from crawl concurrency,
+// fixes it without slowing the crawling itself down at all.
+const dbWriteLimit = pLimit(8);
 
 // Park a campaign the user paused part-way: back to "queued" (the claim query skips
 // it while it is paused) with its contact stage reset, so Resume runs the whole job
@@ -82,6 +88,69 @@ async function parkPausedCampaign(campaignId: string): Promise<void> {
   await updateCampaignStatus(campaignId, "queued");
   await updateContactStageStatus(campaignId, "not_started");
   console.log(`[worker] campaign ${campaignId} paused — it will continue from here when resumed`);
+}
+
+// One automatic pass, run once right before a campaign is marked "completed":
+// retries Stage 1 domains that ended in "error" and Stage 3 contact lookups
+// that failed (timeout/dns_error/error). Before this existed, recovering
+// those required someone manually re-running this exact sequence by hand
+// after every campaign (proven safe and effective doing it for real
+// campaigns — this is that same sequence, promoted into the normal
+// pipeline so "completed" means the real final numbers).
+//
+// Plain crawlDomain only, no browser escalation — escalation OOM'd even at
+// modest concurrency when tried for this. A domain still blocked by a JS
+// challenge after the main run stays unrecovered; that's an accepted gap,
+// not a bug.
+async function recoverFailures(campaignId: string, campaign: NonNullable<Awaited<ReturnType<typeof getCampaign>>>): Promise<"ok" | "paused"> {
+  if (campaign.mode === "discovery") {
+    const errorDomains = await getDomainsByStatus(campaignId, "error");
+    if (errorDomains.length > 0) {
+      console.log(`[recovery] retrying ${errorDomains.length} Stage 1 error domain(s)`);
+      const limit = pLimit(CONCURRENCY);
+      const shouldPause = makePauseCheck(campaignId);
+      let leftForPause = 0;
+      await Promise.all(
+        errorDomains.map((domain) =>
+          limit(async () => {
+            if (await shouldPause()) {
+              leftForPause++;
+              return;
+            }
+            try {
+              const result = await withTimeout(
+                crawlDomain(domain, {
+                  targetPostCount: campaign.targetPostCount,
+                  days: campaign.daysWindow ?? undefined,
+                  deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
+                  skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
+                }),
+                PER_DOMAIN_TIMEOUT_MS,
+                domain
+              );
+              await dbWriteLimit(() => saveCrawlResult(campaignId, result));
+            } catch (err) {
+              console.error(`[recovery] ${domain} still failing:`, errorMessage(err));
+            }
+          })
+        )
+      );
+      if (leftForPause > 0) return "paused";
+
+      const filterResult = await runFilterStage(campaignId, { incremental: true });
+      console.log(`[recovery] filter stage: ${filterResult.kept} kept, ${filterResult.excluded} excluded`, filterResult.byReason);
+    }
+  }
+
+  if (campaign.mode === "direct" || campaign.autoContact) {
+    const resetCount = await resetFailedContacts(campaignId);
+    if (resetCount > 0) {
+      console.log(`[recovery] retrying ${resetCount} previously-failed contact lookup(s)`);
+      if ((await runContactStage(campaignId)) === "paused") return "paused";
+    }
+  }
+
+  return "ok";
 }
 
 export async function runCampaignWorker(campaignId: string): Promise<void> {
@@ -199,6 +268,11 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
           return;
         }
       }
+    }
+
+    if ((await recoverFailures(campaignId, campaign)) === "paused") {
+      await parkPausedCampaign(campaignId);
+      return;
     }
 
     await updateCampaignStatus(campaignId, "completed", { completedAt: new Date() });

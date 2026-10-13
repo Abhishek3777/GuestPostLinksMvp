@@ -10,7 +10,6 @@ import {
   updateContactStageStatus,
 } from "../db/contactResults.js";
 import { loadDoNotContactSet } from "../db/filterResults.js";
-import { destinationExclusion } from "../contact/destination.js";
 import { exclusionReason } from "../filter/exclusions.js";
 import { contentLooksLikeGambling } from "../filter/gambling.js";
 import { looksLikeGovOrInstitutional } from "../filter/institutional.js";
@@ -32,11 +31,16 @@ async function checkRelevance(rootDomain: string, homepageHtml: string): Promise
   if (looksLikeGovOrInstitutional(rootDomain, homepageHtml)) {
     return { reason: "government_or_institutional", note: "looks like a government or financial-institution site" };
   }
-  if (looksLikeScholarshipDomain(rootDomain)) {
-    return { reason: "not_a_business", note: "domain name signals a scholarship/memorial page, not a business" };
-  }
+  // "not_a_business" exclusion disabled for now (2026-10-13) — too many real,
+  // legitimate businesses offering real services were coming back as false
+  // positives. Per team decision: merge these back into the main pipeline
+  // (contact them like any other kept prospect) until the classifier is
+  // tuned properly. Still calling classifyBusinessRelevanceCached below,
+  // which still writes to domain_relevance_cache regardless of what we do
+  // with its answer — so the data needed to evaluate and re-enable this
+  // later keeps accumulating the whole time, nothing lost by waiting.
+  if (looksLikeScholarshipDomain(rootDomain)) return null;
   const { decision, reason } = await classifyBusinessRelevanceCached(rootDomain, homepageHtml);
-  if (decision === "exclude") return { reason: "not_a_business", note: reason };
   if (decision === "unsure") return { reason: "needs_review", note: reason };
   return null;
 }
@@ -45,10 +49,11 @@ async function checkRelevance(rootDomain: string, homepageHtml: string): Promise
 const CONCURRENCY = Math.max(1, Number(process.env.CONTACT_CONCURRENCY) || 8);
 
 // Same DB-pool reasoning as runCampaign.ts's dbWriteLimit — CONTACT_CONCURRENCY
-// runs at 50 in prod, well above the pool's 25-connection cap, so a burst of
-// lookups finishing together can still overwhelm it even though crawling and
-// contact stages now never run at the same time as each other.
-const dbWriteLimit = pLimit(20);
+// runs at 50 in prod, well above the pool's 10-connection cap (lowered from
+// 25 on 2026-10-13, see runCampaign.ts), so a burst of lookups finishing
+// together can still overwhelm it even though crawling and contact stages
+// now never run at the same time as each other.
+const dbWriteLimit = pLimit(8);
 
 // Same hard ceiling idea as runCampaign.ts's PER_DOMAIN_TIMEOUT_MS, shorter
 // since a contact lookup is lighter than a full crawl — see withTimeout in
@@ -145,22 +150,18 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
               }
             }
 
-            // Where the site really ends up gets the same exclusion rules the
-            // prospect itself passed — a redirect to a big brand or a parked page
-            // is not a lead.
-            const moved = destinationExclusion(
-              prospect.rootDomain,
-              [result.finalDomain, result.successorDomain],
-              doNotContact
-            );
-            if (moved) {
+            // ANY redirect pulls a prospect out of Contacts and into Excluded,
+            // uniformly reason "redirected" (2026-10-13, per team decision) —
+            // not just ones that happen to also break an exclusion rule, and
+            // not split out by what rule it happens to match either. Marketing
+            // bulk-opens the ORIGINAL list of input domains after a campaign
+            // ends; a domain that quietly points somewhere else by the time
+            // they open it needs to be impossible to miss, not buried as a
+            // column on an otherwise-normal row.
+            const destination = result.finalDomain ?? result.successorDomain;
+            if (destination) {
               await dbWriteLimit(() =>
-                saveContactExclusion(
-                  prospect.id,
-                  moved.reason,
-                  `redirects to / moved to ${moved.destination} (${moved.reason})`,
-                  moved.destination
-                )
+                saveContactExclusion(prospect.id, "redirected", `redirected from ${prospect.rootDomain} to ${destination}`, destination)
               );
             } else {
               await dbWriteLimit(() => saveContactResult(prospect.id, result));

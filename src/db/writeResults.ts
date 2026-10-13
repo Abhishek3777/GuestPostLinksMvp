@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts } from "./schema.js";
 import type { CrawlDomainResult } from "../pipeline.js";
@@ -89,6 +89,17 @@ export async function getCheckedDomains(campaignId: string): Promise<Set<string>
     .from(domainCrawlStatus)
     .where(eq(domainCrawlStatus.campaignId, campaignId));
   return new Set(rows.map((r) => r.domain));
+}
+
+// Stage 1 domains that landed on a specific status (e.g. "error") — used by
+// the end-of-campaign recovery pass (runCampaign.ts) to find what's worth
+// retrying before the campaign is actually marked complete.
+export async function getDomainsByStatus(campaignId: string, status: (typeof domainCrawlStatus.$inferSelect)["status"]): Promise<string[]> {
+  const rows = await db
+    .select({ domain: domainCrawlStatus.domain })
+    .from(domainCrawlStatus)
+    .where(and(eq(domainCrawlStatus.campaignId, campaignId), eq(domainCrawlStatus.status, status)));
+  return rows.map((r) => r.domain);
 }
 
 // Post URLs earlier runs already finished with for this domain — a monitoring
