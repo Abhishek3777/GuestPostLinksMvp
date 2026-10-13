@@ -35,40 +35,43 @@ export async function listCampaigns(userId?: string) {
   const allCampaigns = allCampaignRows.map((r) => ({ ...r.campaign, ownerEmail: r.ownerEmail }));
   const campaignIds = allCampaigns.map((c) => c.id);
 
-  // Scoped to just the campaigns actually being shown — these used to scan
-  // guest_post_links/guest_post_prospects/domain_crawl_status/campaign_domains
-  // in FULL on every dashboard load (hundreds of thousands of rows combined),
-  // regardless of how many campaigns the viewer could even see. Confirmed as
-  // the main dashboard's real bottleneck (2026-10-13 outage investigation).
-  const [domainCounts, statusCounts, linkCounts, keptProspectCounts] = campaignIds.length
-    ? await Promise.all([
-        db
-          .select({ campaignId: campaignDomains.campaignId, count: sql<number>`count(*)::int` })
-          .from(campaignDomains)
-          .where(inArray(campaignDomains.campaignId, campaignIds))
-          .groupBy(campaignDomains.campaignId),
-        db
-          .select({ campaignId: domainCrawlStatus.campaignId, count: sql<number>`count(*)::int` })
-          .from(domainCrawlStatus)
-          .where(inArray(domainCrawlStatus.campaignId, campaignIds))
-          .groupBy(domainCrawlStatus.campaignId),
-        db
-          .select({ campaignId: guestPostLinks.campaignId, count: sql<number>`count(*)::int` })
-          .from(guestPostLinks)
-          .where(inArray(guestPostLinks.campaignId, campaignIds))
-          .groupBy(guestPostLinks.campaignId),
-        db
-          .select({ campaignId: guestPostProspects.campaignId, count: sql<number>`count(*)::int` })
-          .from(guestPostProspects)
-          .where(and(sql`${guestPostProspects.exclusionReason} IS NULL`, inArray(guestPostProspects.campaignId, campaignIds)))
-          .groupBy(guestPostProspects.campaignId),
-      ])
-    : [[], [], [], []];
+  // Scoped to just the campaigns actually being shown, and combined into ONE
+  // round trip (UNION ALL + a "kind" column, split back apart below) instead
+  // of 4 separate queries. These used to scan guest_post_links/
+  // guest_post_prospects/domain_crawl_status/campaign_domains in FULL on
+  // every dashboard load — confirmed as the main dashboard's real bottleneck
+  // (2026-10-13 outage investigation). Collapsing 4 queries into 1 matters on
+  // top of that: the dashboard's connection pool is capped at 4 total
+  // (src/db/client.ts / lib/db.ts), so 4 simultaneous queries from a single
+  // page load could by itself leave zero spare connections for anyone else
+  // loading the dashboard at the same moment.
+  const idList = sql.join(campaignIds.map((id) => sql`${id}`), sql`, `);
+  const counts = campaignIds.length
+    ? await db.execute(sql`
+        select 'domains' as kind, ${campaignDomains.campaignId} as campaign_id, count(*)::int as n
+          from ${campaignDomains} where ${campaignDomains.campaignId} in (${idList}) group by ${campaignDomains.campaignId}
+        union all
+        select 'statuses', ${domainCrawlStatus.campaignId}, count(*)::int
+          from ${domainCrawlStatus} where ${domainCrawlStatus.campaignId} in (${idList}) group by ${domainCrawlStatus.campaignId}
+        union all
+        select 'links', ${guestPostLinks.campaignId}, count(*)::int
+          from ${guestPostLinks} where ${guestPostLinks.campaignId} in (${idList}) group by ${guestPostLinks.campaignId}
+        union all
+        select 'kept', ${guestPostProspects.campaignId}, count(*)::int
+          from ${guestPostProspects}
+          where ${guestPostProspects.exclusionReason} is null and ${guestPostProspects.campaignId} in (${idList})
+          group by ${guestPostProspects.campaignId}
+      `)
+    : [];
 
-  const domainMap = new Map(domainCounts.map((d) => [d.campaignId, d.count]));
-  const statusMap = new Map(statusCounts.map((d) => [d.campaignId, d.count]));
-  const linkMap = new Map(linkCounts.map((d) => [d.campaignId, d.count]));
-  const keptMap = new Map(keptProspectCounts.map((d) => [d.campaignId, d.count]));
+  const domainMap = new Map<string, number>();
+  const statusMap = new Map<string, number>();
+  const linkMap = new Map<string, number>();
+  const keptMap = new Map<string, number>();
+  const mapByKind = { domains: domainMap, statuses: statusMap, links: linkMap, kept: keptMap } as const;
+  for (const row of counts as { kind: keyof typeof mapByKind; campaign_id: string; n: number }[]) {
+    mapByKind[row.kind].set(row.campaign_id, row.n);
+  }
 
   return allCampaigns.map((c) => ({
     ...c,
