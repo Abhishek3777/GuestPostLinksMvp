@@ -33,26 +33,37 @@ export async function listCampaigns(userId?: string) {
     .where(userId ? eq(campaigns.createdBy, userId) : undefined)
     .orderBy(desc(campaigns.createdAt));
   const allCampaigns = allCampaignRows.map((r) => ({ ...r.campaign, ownerEmail: r.ownerEmail }));
+  const campaignIds = allCampaigns.map((c) => c.id);
 
-  const [domainCounts, statusCounts, linkCounts, keptProspectCounts] = await Promise.all([
-    db
-      .select({ campaignId: campaignDomains.campaignId, count: sql<number>`count(*)::int` })
-      .from(campaignDomains)
-      .groupBy(campaignDomains.campaignId),
-    db
-      .select({ campaignId: domainCrawlStatus.campaignId, count: sql<number>`count(*)::int` })
-      .from(domainCrawlStatus)
-      .groupBy(domainCrawlStatus.campaignId),
-    db
-      .select({ campaignId: guestPostLinks.campaignId, count: sql<number>`count(*)::int` })
-      .from(guestPostLinks)
-      .groupBy(guestPostLinks.campaignId),
-    db
-      .select({ campaignId: guestPostProspects.campaignId, count: sql<number>`count(*)::int` })
-      .from(guestPostProspects)
-      .where(sql`${guestPostProspects.exclusionReason} IS NULL`)
-      .groupBy(guestPostProspects.campaignId),
-  ]);
+  // Scoped to just the campaigns actually being shown — these used to scan
+  // guest_post_links/guest_post_prospects/domain_crawl_status/campaign_domains
+  // in FULL on every dashboard load (hundreds of thousands of rows combined),
+  // regardless of how many campaigns the viewer could even see. Confirmed as
+  // the main dashboard's real bottleneck (2026-10-13 outage investigation).
+  const [domainCounts, statusCounts, linkCounts, keptProspectCounts] = campaignIds.length
+    ? await Promise.all([
+        db
+          .select({ campaignId: campaignDomains.campaignId, count: sql<number>`count(*)::int` })
+          .from(campaignDomains)
+          .where(inArray(campaignDomains.campaignId, campaignIds))
+          .groupBy(campaignDomains.campaignId),
+        db
+          .select({ campaignId: domainCrawlStatus.campaignId, count: sql<number>`count(*)::int` })
+          .from(domainCrawlStatus)
+          .where(inArray(domainCrawlStatus.campaignId, campaignIds))
+          .groupBy(domainCrawlStatus.campaignId),
+        db
+          .select({ campaignId: guestPostLinks.campaignId, count: sql<number>`count(*)::int` })
+          .from(guestPostLinks)
+          .where(inArray(guestPostLinks.campaignId, campaignIds))
+          .groupBy(guestPostLinks.campaignId),
+        db
+          .select({ campaignId: guestPostProspects.campaignId, count: sql<number>`count(*)::int` })
+          .from(guestPostProspects)
+          .where(and(sql`${guestPostProspects.exclusionReason} IS NULL`, inArray(guestPostProspects.campaignId, campaignIds)))
+          .groupBy(guestPostProspects.campaignId),
+      ])
+    : [[], [], [], []];
 
   const domainMap = new Map(domainCounts.map((d) => [d.campaignId, d.count]));
   const statusMap = new Map(statusCounts.map((d) => [d.campaignId, d.count]));
