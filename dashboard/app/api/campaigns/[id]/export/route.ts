@@ -57,8 +57,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const cols = query.get("cols")?.split(",").filter(Boolean);
   const pick = (table: CampaignTable) => (cols?.length ? selectColumns(table, cols) : null) ?? table;
   // The Excluded sheet is pointless without its reason column, regardless of
-  // whichever columns were picked for the main export — force it in.
-  const excludedCols = cols?.length ? [...new Set([...cols, "Prospect Decision"])] : undefined;
+  // whichever columns were picked for the main export — force it in. Contact
+  // Notes is forced in too: for a "redirected" row, the reason alone is just
+  // the word "redirected" — the actual from -> to detail lives in this
+  // column, not in Prospect Decision (confirmed missing from a real export,
+  // 2026-10-13: a custom column pick had dropped it, leaving the Excluded
+  // sheet with no way to tell WHERE a redirected domain actually went).
+  const excludedCols = cols?.length ? [...new Set([...cols, "Prospect Decision", "Contact Notes"])] : undefined;
   const pickExcluded = (table: CampaignTable) => (excludedCols?.length ? selectColumns(table, excludedCols) : null) ?? table;
   // Same idea for No Backlinks Found — "why" (crawl status / contact status)
   // is the whole point of that sheet, so it stays even if not explicitly picked.

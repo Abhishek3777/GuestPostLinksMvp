@@ -207,8 +207,16 @@ function contactCells(p: CsvProspectRow | undefined, contactRan: boolean) {
     else if (p.contactCheckedAt) status = p.contactStatus;
     else status = contactRan ? "pending" : "not run yet";
   }
-  // Contact data only exists for kept prospects that were actually checked.
+  // Email/form only ever exist for kept prospects that were actually checked
+  // — an excluded prospect never had its contact info looked up or kept.
   const found = p && !excluded && p.contactCheckedAt ? p : null;
+  // Notes and the redirect destination are different: saveContactExclusion
+  // (worker/contactStage.ts) writes BOTH on an excluded row too — e.g. a
+  // "redirected" exclusion's whole point is to carry "redirected from X to
+  // Y" and the destination domain. Gating those behind `found` the same way
+  // as email/form silently dropped them for every excluded reason except
+  // claimed_by_teammate (which had its own bypass) — confirmed blank in a
+  // real export, 2026-10-13. Read straight off `p` instead, kept or not.
   const claimNote =
     p?.exclusionReason === "claimed_by_teammate" && p.claimedAt
       ? claimedByTeammateNote(p.claimedAt, p.claimedByCampaignName, p.claimedByOwnerEmail)
@@ -218,8 +226,8 @@ function contactCells(p: CsvProspectRow | undefined, contactRan: boolean) {
     status,
     email: found?.emailAddress ?? "",
     form: found?.contactFormUrl ?? "",
-    notes: claimNote ?? found?.contactReason ?? "",
-    redirects: found?.finalDomain ?? "",
+    notes: claimNote ?? p?.contactReason ?? "",
+    redirects: p?.finalDomain ?? "",
   };
 }
 
@@ -457,7 +465,10 @@ function buildFullPipelineRows(input: CampaignCsvInput): (string | number | null
         else contactStatus = contactRan ? "pending" : "not run yet";
       }
 
-      // Contact data only exists for kept prospects that were actually checked.
+      // Email/form only ever exist for kept prospects that were actually
+      // checked. Notes and the redirect destination are different — an
+      // excluded row (e.g. "redirected") carries both of those too (see the
+      // matching note on contactCells above) — read straight off `p`.
       const contact = p && !excluded && p.contactCheckedAt ? p : null;
       rows.push([
         ...head,
@@ -470,8 +481,8 @@ function buildFullPipelineRows(input: CampaignCsvInput): (string | number | null
         contact?.emailAddress ?? "",
         pickBestEmail(contact?.emailAddress),
         contact?.contactFormUrl ?? "",
-        contact?.contactReason ?? "",
-        contact?.finalDomain ?? "",
+        p?.contactReason ?? "",
+        p?.finalDomain ?? "",
         fmtDate(l.dateFound),
       ]);
     }
@@ -489,7 +500,25 @@ function buildDirectRows(input: CampaignCsvInput): (string | number | null)[][] 
     if (!p) return [d, "Pending", "pending", "", "", "", "", "", ""];
 
     if (p.exclusionReason) {
-      return [d, "Excluded", p.exclusionReason, "excluded at the filter stage — no contact lookup attempted", "", "", "", "", ""];
+      // The generic "no contact lookup attempted" note is only true for a
+      // Stage 2 exclusion (do_not_contact, big_brand, ...) — a "redirected"
+      // (or gambling/institutional) exclusion happens AFTER a real lookup
+      // ran, and p.contactReason already carries the real, specific note
+      // ("redirected from X to Y") for those. Use it when present; only fall
+      // back to the generic line for genuine never-looked-up exclusions.
+      // Also now carries the redirect destination, which
+      // saveContactExclusion always sets but this row was dropping.
+      return [
+        d,
+        "Excluded",
+        p.exclusionReason,
+        p.contactReason ?? "excluded at the filter stage — no contact lookup attempted",
+        "",
+        "",
+        "",
+        p.finalDomain ?? "",
+        fmtDate(p.contactCheckedAt),
+      ];
     }
     if (!p.contactCheckedAt) return [d, "Pending", "pending", "", "", "", "", "", ""];
 

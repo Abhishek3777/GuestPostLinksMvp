@@ -207,10 +207,16 @@ export function ProspectsSection({
                       {p.exclusionReason ? (
                         <div className="flex flex-col items-start gap-1">
                           <StatusBadge status={p.exclusionReason} />
-                          {p.exclusionReason === "claimed_by_teammate" && p.claimedAt && (
+                          {p.exclusionReason === "claimed_by_teammate" && p.claimedAt ? (
                             <span className="text-[11px] text-muted">
                               {claimedByTeammateNote(new Date(p.claimedAt), p.claimedByCampaignName, p.claimedByOwnerEmail)}
                             </span>
+                          ) : (
+                            p.contactReason && (
+                              <span className="max-w-[240px] truncate text-[11px] text-muted" title={p.contactReason}>
+                                {p.contactReason}
+                              </span>
+                            )
                           )}
                         </div>
                       ) : (
