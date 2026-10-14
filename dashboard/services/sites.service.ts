@@ -244,9 +244,9 @@ export type RunResult =
 // queued while an earlier one is still pending will compute its "since when"
 // window from a lastRunAt the earlier run hasn't actually acted on yet. This
 // never causes duplicate contact work or double-counted leads — processed_posts
-// (global) and the already_found / claimed_by_teammate filter-stage checks
-// still catch anything genuinely re-processed — worst case is an unnecessarily
-// wide or narrow date window on the stacked run, not a data-correctness bug.
+// (global) and the claimed_by_teammate filter-stage check still catch
+// anything genuinely re-processed — worst case is an unnecessarily wide or
+// narrow date window on the stacked run, not a data-correctness bug.
 export async function runActiveSites(
   viewer: CurrentUser,
   name?: string,

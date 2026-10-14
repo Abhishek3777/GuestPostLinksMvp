@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import {
   getCampaign,
@@ -44,6 +44,11 @@ export default async function CampaignContactsPage({
 
   const campaign = await getCampaign(id);
   if (!campaign) notFound();
+
+  // Detail rows are gone — the main page shows one unified frozen summary
+  // now instead of this page's live contact-results slice, so there's
+  // nothing separate left to show here.
+  if (campaign.archivedAt) redirect(`/campaigns/${id}`);
 
   const contactStageStarted = campaign.contactStageStatus !== "not_started";
   if (!contactStageStarted) notFound();

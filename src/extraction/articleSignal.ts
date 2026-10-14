@@ -63,8 +63,21 @@ function articleDateFromOpenGraph(html: string): string | null {
 
 function articleDateFromTimeTag(html: string): string | null {
   for (const [tag] of html.matchAll(/<time\b[^>]*>/gi)) {
+    // class="entry-date published" (or "...published updated") is WordPress
+    // core's own default output (get_the_date()) — confirmed live,
+    // 2026-10-13: erziehungsstile.be has exactly
+    // <time class="entry-date published updated" datetime="2022-07-04T...">
+    // and this check was missing it entirely, falling through every other
+    // signal in this file (including the URL, which had no date either) and
+    // letting a 2-year-old post slip through a 12-day campaign window as
+    // fully "undated". Likely the single most common real-world WordPress
+    // convention of all of these, not an edge case.
     const isPublishMarker =
-      /\bpubdate\b/i.test(tag) || /itemprop=["']datePublished["']/i.test(tag) || /property=["']datePublished["']/i.test(tag);
+      /\bpubdate\b/i.test(tag) ||
+      /itemprop=["']datePublished["']/i.test(tag) ||
+      /property=["']datePublished["']/i.test(tag) ||
+      /class=["'][^"']*\bentry-date\b[^"']*["']/i.test(tag) ||
+      /class=["'][^"']*\bpublished\b[^"']*["']/i.test(tag);
     if (!isPublishMarker) continue;
     const m = tag.match(/datetime=["']([^"']+)["']/i);
     if (m) return m[1];
@@ -75,6 +88,39 @@ function articleDateFromTimeTag(html: string): string | null {
 export function detectArticle(html: string): ArticleDetection {
   const publishedAt = articleDateFromJsonLd(html) ?? articleDateFromOpenGraph(html) ?? articleDateFromTimeTag(html);
   return { isArticle: publishedAt !== null, publishedAt };
+}
+
+// Last-resort date signal, used only when nothing on the page itself gives
+// one (confirmed live, 2026-10-13: bodycorporatecleaningmelbourne.com.au has
+// <time datetime=""> — present, but genuinely empty — and no JSON-LD/OG date
+// at all, a broken theme, not a missing one). A date-based WordPress
+// permalink (/2023/11/20/slug/ or /2023/11/slug/) is an extremely common,
+// author-set convention — this is what let a 2-year-old post slip through a
+// 12-day campaign window as "undated" (pipeline.ts keeps undated posts
+// rather than guessing them away, so a missed real date here means a stale
+// post silently bypasses the whole day-window filter).
+export function dateFromUrlPath(url: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const match = /\/(\d{4})\/(\d{1,2})(?:\/(\d{1,2}))?(?:\/|$)/.exec(pathname);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = match[3] ? Number(match[3]) : 1;
+  const currentYear = new Date().getUTCFullYear();
+  // A blog permalink year is never before the web era and never in the
+  // future — guards against matching an unrelated numeric path segment
+  // (a product SKU, a page id) that just happens to look year-shaped.
+  if (year < 1995 || year > currentYear + 1 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getTime() > Date.now()) return null; // future-dated match is not a real publish date
+  return date.toISOString();
 }
 
 // --- Fallback confirmation, for pages with neither a WordPress label nor a

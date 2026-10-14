@@ -31,6 +31,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!detail) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
   const { campaign } = detail;
+
+  // Detail rows are gone (archiveCampaign ran a week after completion) —
+  // nothing left here to build a file from. The dashboard already hides this
+  // button for an archived campaign; this is the safety net for an old
+  // bookmarked/shared export link.
+  if (campaign.archivedAt) {
+    return NextResponse.json(
+      { error: "This campaign's detailed data was cleaned up a week after it completed — see its page for the final summary." },
+      { status: 410 }
+    );
+  }
   const query = new URL(req.url).searchParams;
 
   // Testing aid for the group-dedup feature: shows the campaign as if its

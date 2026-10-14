@@ -21,8 +21,7 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   parked_domain: "neutral",
   url_shortener: "neutral",
   invalid_domain: "neutral",
-  already_found: "neutral", // a monitoring run: an earlier run already delivered this lead
-  claimed_by_teammate: "neutral", // another campaign already kept this lead
+  claimed_by_teammate: "neutral", // another campaign already found a real contact for this lead
   // Stage 3 contact status
   has_email: "success",
   form_only: "info",

@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "./client.js";
-import { campaigns, guestPostProspects } from "./schema.js";
+import { campaigns, domainContactLedger, guestPostProspects } from "./schema.js";
 import type { ContactResult } from "../contact/findContact.js";
 import { pickEmail } from "../contact/pickEmail.js";
 
@@ -37,18 +37,41 @@ export async function resetFailedContacts(campaignId: string): Promise<number> {
   return rows.length;
 }
 
-export async function saveContactResult(prospectId: string, result: ContactResult) {
-  await db
-    .update(guestPostProspects)
-    .set({
-      contactStatus: result.status,
-      emailAddress: result.emailAddress,
-      contactFormUrl: result.contactFormUrl,
-      finalDomain: result.finalDomain,
-      contactReason: result.reason,
-      contactCheckedAt: new Date(),
-    })
-    .where(eq(guestPostProspects.id, prospectId));
+// rootDomain/campaignId are only here for the ledger write below — the
+// prospect update itself only ever needed prospectId.
+export async function saveContactResult(prospectId: string, rootDomain: string, campaignId: string, result: ContactResult) {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(guestPostProspects)
+      .set({
+        contactStatus: result.status,
+        emailAddress: result.emailAddress,
+        contactFormUrl: result.contactFormUrl,
+        finalDomain: result.finalDomain,
+        contactReason: result.reason,
+        contactCheckedAt: new Date(),
+      })
+      .where(eq(guestPostProspects.id, prospectId));
+
+    // The one fact that has to survive this campaign's data eventually being
+    // deleted, so the 90-day global dedup (findClaimedGlobally) keeps working
+    // — see the table's own comment in schema.ts. Only a REAL found contact
+    // counts, not merely being kept as a prospect: that's the actual thing
+    // worth protecting against (re-emailing a domain we already have a
+    // working contact for), not "we once considered this domain." Upserted,
+    // not inserted-once — a later, newer contact should push the cooldown
+    // forward, not leave it stuck on the first time this domain was ever
+    // found.
+    if (result.status === "has_email" || result.status === "form_only") {
+      await tx
+        .insert(domainContactLedger)
+        .values({ domain: rootDomain, contactedAt: new Date(), campaignId })
+        .onConflictDoUpdate({
+          target: domainContactLedger.domain,
+          set: { contactedAt: new Date(), campaignId },
+        });
+    }
+  });
 }
 
 // A prospect whose site turned out to redirect to (or say it moved to) somewhere

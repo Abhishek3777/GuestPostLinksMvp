@@ -2,6 +2,7 @@ import { fetchText, isHostHeavilyRateLimited, type Fetcher } from "./httpClient.
 import { discoverPosts } from "./discovery/index.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
 import { extractLinksFromPost } from "./extraction/index.js";
+import { dateFromUrlPath } from "./extraction/articleSignal.js";
 
 // A post with no confirmable date is kept rather than rejected (we can't
 // prove it's old) — but a domain whose posts are ALL undated could otherwise
@@ -150,10 +151,15 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
     // the actual, final day-window check: discovery-stage filtering only had
     // an untrustworthy guess (or nothing) to go on, so a post that looked
     // recent from its sitemap/feed entry can still turn out to be old once
-    // we've read its real publish date — and vice versa. No date found
-    // anywhere means we can't confirm either way, so it's kept rather than
+    // we've read its real publish date — and vice versa. A date-based
+    // permalink (/2023/11/20/slug/) is the last resort before giving up
+    // entirely — confirmed live, 2026-10-13: a site with a broken theme
+    // (empty <time datetime=""> tags, no JSON-LD/OG date either) let a
+    // 2-year-old post slip through a 12-day campaign window as "undated"
+    // before this existed. No date found anywhere (including the URL) means
+    // we genuinely can't confirm either way, so it's kept rather than
     // guessed at.
-    const effectiveDate = result.publishedAt ?? post.publishedAt ?? null;
+    const effectiveDate = result.publishedAt ?? post.publishedAt ?? dateFromUrlPath(post.url) ?? null;
     if (opts.days && effectiveDate) {
       const t = new Date(effectiveDate).getTime();
       const cutoff = Date.now() - opts.days * 24 * 60 * 60 * 1000;

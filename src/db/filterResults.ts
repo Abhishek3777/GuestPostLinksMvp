@@ -1,6 +1,6 @@
-import { and, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, type Executor } from "./client.js";
-import { appSettings, doNotContact, guestPostLinks, guestPostProspects } from "./schema.js";
+import { appSettings, doNotContact, domainContactLedger, guestPostLinks, guestPostProspects } from "./schema.js";
 
 export async function loadDoNotContactSet(): Promise<Set<string>> {
   const rows = await db.select({ domain: doNotContact.domain }).from(doNotContact);
@@ -20,34 +20,6 @@ export async function getCampaignLinks(campaignId: string) {
   return db.select().from(guestPostLinks).where(eq(guestPostLinks.campaignId, campaignId)).orderBy(guestPostLinks.dateFound);
 }
 
-// Root domains an EARLIER campaign already delivered as a kept lead with a
-// definitive contact result (an email, a form, or a real "nothing there"). A
-// monitoring run marks these instead of handing them over again. A result that
-// only failed for a temporary reason (blocked, timeout, DNS, error, never
-// checked) is deliberately not counted, so those get another try. Results
-// older than the window are stale and count as new again.
-export const ALREADY_FOUND_WINDOW_DAYS = 180;
-
-export async function findAlreadyFoundDomains(campaignId: string, domains: string[]): Promise<Set<string>> {
-  const found = new Set<string>();
-  for (let i = 0; i < domains.length; i += 5000) {
-    const rows = await db
-      .selectDistinct({ rootDomain: guestPostProspects.rootDomain })
-      .from(guestPostProspects)
-      .where(
-        and(
-          ne(guestPostProspects.campaignId, campaignId),
-          isNull(guestPostProspects.exclusionReason),
-          inArray(guestPostProspects.contactStatus, ["has_email", "form_only", "no_contact_found"]),
-          gt(guestPostProspects.contactCheckedAt, sql`now() - make_interval(days => ${ALREADY_FOUND_WINDOW_DAYS})`),
-          inArray(guestPostProspects.rootDomain, domains.slice(i, i + 5000))
-        )
-      );
-    for (const r of rows) found.add(r.rootDomain);
-  }
-  return found;
-}
-
 // The app-wide re-contact cooldown (app_settings is a single row, id 1).
 // Falls back to 90 if the row is somehow missing rather than erroring out —
 // matches the field's own DB default, so a missing row behaves the same as
@@ -59,28 +31,29 @@ export async function getDedupDays(): Promise<number> {
   return row?.dedupDays ?? DEFAULT_DEDUP_DAYS;
 }
 
-// Domains ANY OTHER campaign (anyone, any group) has already kept (not
-// excluded) as a prospect, within the app-wide cooldown window — regardless
-// of whether contact lookup has even run on it yet: being kept is exactly
-// what makes a domain show up in an export, and once it's out the door (fed
-// into FormBlast, etc.) re-finding it and reaching out again reads as spam
-// and risks sender reputation. First campaign to reach this stage claims the
-// domain; every other campaign, this run or any later one within the
-// window, excludes it instead. Once the window passes, it's fair game
-// again. See the note on guestPostProspects in schema.ts.
-// Returns WHEN each claimed domain was claimed (the claiming row's
-// createdAt), not just whether it was — so callers can say "claimed 31 days
-// ago" instead of a bare label. If a domain has more than one qualifying
-// claim (edge case), the most recent one wins, since that's the one that
-// actually determines when the cooldown ends.
+// THE one dedup check — there must only ever be one (2026-10-13, explicit
+// team decision: two separate mechanisms with different windows and
+// trigger conditions existing side by side is exactly the confusing setup
+// to avoid). Domains ANY OTHER campaign (anyone, any group) has actually
+// found a real email or contact form for, within the app-wide cooldown
+// window (the "Lead re-contact cooldown" setting on the Team page) — not
+// merely kept as a prospect. Re-finding and re-emailing a domain we already
+// have a working contact for is the actual spam risk; a domain we only ever
+// considered and never successfully reached isn't.
 //
-// `executor` defaults to the shared db client, but filterAndSave passes in a
-// LOCKED transaction here once campaigns can run concurrently — see the
-// pg_advisory_xact_lock in filter/index.ts for why this specific read must
-// happen inside the same lock as the write in saveProspects below.
+// Reads from domain_contact_ledger, not guestPostProspects directly — this
+// is deliberate and load-bearing: the ledger is the one thing designed to
+// keep existing even after a campaign's own detailed data is eventually
+// deleted (see the table's own comment in schema.ts), so this check keeps
+// working regardless of the rest of that campaign's data lifecycle.
+//
+// Returns WHEN each claim happened, not just whether it did — so callers can
+// say "claimed 31 days ago" instead of a bare label. One row per domain in
+// the ledger (upserted, not accumulated), so there's never more than one
+// candidate per domain to pick between.
 export interface ClaimedBy {
   claimedAt: Date;
-  campaignId: string;
+  campaignId: string | null;
 }
 
 export async function findClaimedGlobally(
@@ -99,20 +72,19 @@ export async function findClaimedGlobally(
     // 2026-10-12). sql.join + IN (...) is the pattern already proven
     // elsewhere in this session for the same class of query.
     const domainList = sql.join(domains.slice(i, i + 5000).map((d) => sql`${d}`), sql`, `);
-    // DISTINCT ON instead of the old GROUP BY + max(): we need the campaign_id
-    // that belongs to that latest claim, not just the timestamp, so the row
-    // itself has to come along rather than being aggregated away.
-    const rows = await executor.execute<{ root_domain: string; created_at: string; campaign_id: string }>(sql`
-      select distinct on (${guestPostProspects.rootDomain}) ${guestPostProspects.rootDomain} as root_domain,
-        ${guestPostProspects.createdAt} as created_at, ${guestPostProspects.campaignId} as campaign_id
-      from ${guestPostProspects}
-      where ${guestPostProspects.campaignId} != ${campaignId}
-        and ${guestPostProspects.exclusionReason} is null
-        and ${guestPostProspects.createdAt} > now() - make_interval(days => ${dedupDays})
-        and ${guestPostProspects.rootDomain} in (${domainList})
-      order by ${guestPostProspects.rootDomain}, ${guestPostProspects.createdAt} desc
+    // IS DISTINCT FROM, not != — a ledger row whose campaign has since been
+    // deleted has campaign_id null, and plain != against null is itself
+    // null (never true) in SQL, which would wrongly let that row stop
+    // counting as a claim the moment its campaign disappears.
+    const rows = await executor.execute<{ domain: string; contacted_at: string; campaign_id: string | null }>(sql`
+      select ${domainContactLedger.domain} as domain,
+        ${domainContactLedger.contactedAt} as contacted_at, ${domainContactLedger.campaignId} as campaign_id
+      from ${domainContactLedger}
+      where ${domainContactLedger.campaignId} is distinct from ${campaignId}
+        and ${domainContactLedger.contactedAt} > now() - make_interval(days => ${dedupDays})
+        and ${domainContactLedger.domain} in (${domainList})
     `);
-    for (const r of rows) claimed.set(r.root_domain, { claimedAt: new Date(r.created_at), campaignId: r.campaign_id });
+    for (const r of rows) claimed.set(r.domain, { claimedAt: new Date(r.contacted_at), campaignId: r.campaign_id });
   }
   return claimed;
 }

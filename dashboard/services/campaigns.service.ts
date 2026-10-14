@@ -405,7 +405,8 @@ export async function startContactStage(campaignId: string) {
         eq(campaigns.id, campaignId),
         eq(campaigns.mode, "discovery"),
         eq(campaigns.status, "completed"),
-        eq(campaigns.contactStageStatus, "not_started")
+        eq(campaigns.contactStageStatus, "not_started"),
+        isNull(campaigns.archivedAt)
       )
     );
 }
@@ -463,6 +464,9 @@ export async function retryFailedContacts(
 ): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
   const [c] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
   if (!c) return { ok: false, error: "Campaign not found" };
+  if (c.archivedAt) {
+    return { ok: false, error: "This campaign's detailed data was cleaned up a week after it completed — nothing left to retry." };
+  }
   if (c.status !== "completed" || !["completed", "failed"].includes(c.contactStageStatus)) {
     return { ok: false, error: "Wait for the campaign to finish before retrying." };
   }

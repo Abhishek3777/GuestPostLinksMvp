@@ -70,6 +70,29 @@ export async function getCampaign(campaignId: string) {
   return row;
 }
 
+// Default 6GB (~$5-7 at the ~$1/GB rate observed 2026-10-14) — tunable via
+// env without a deploy. A campaign that hits this just stops escalating
+// further blocked domains to the paid proxy; everything else about it
+// (the free direct-browser tier, CapSolver) is unaffected.
+const PROXY_BANDWIDTH_CAP_BYTES = (Number(process.env.PROXY_BANDWIDTH_CAP_MB) || 6_000) * 1024 * 1024;
+
+export async function isOverProxyBudget(campaignId: string): Promise<boolean> {
+  const [row] = await db.select({ proxyBytesUsed: campaigns.proxyBytesUsed }).from(campaigns).where(eq(campaigns.id, campaignId));
+  return (row?.proxyBytesUsed ?? 0) >= PROXY_BANDWIDTH_CAP_BYTES;
+}
+
+// Atomic increment (UPDATE ... SET x = x + n), not read-then-write — avoids
+// losing an update if two domains finish a proxy fetch for the same
+// campaign at almost the same instant (browserLimit allows a couple of
+// concurrent browser pages at once).
+export async function addProxyBytesUsed(campaignId: string, bytes: number): Promise<void> {
+  if (bytes <= 0) return;
+  await db
+    .update(campaigns)
+    .set({ proxyBytesUsed: sql`${campaigns.proxyBytesUsed} + ${bytes}` })
+    .where(eq(campaigns.id, campaignId));
+}
+
 export async function getCampaignDomains(campaignId: string) {
   const rows = await db
     .select({ domain: campaignDomains.domain })

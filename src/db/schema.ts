@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm";
-import { boolean, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /* ---------------------------------------------------------------------------
  * Enums
@@ -117,6 +117,25 @@ export const campaigns = pgTable("campaigns", {
   contactStageStatus: contactStageStatus("contact_stage_status").notNull().default("not_started"),
   contactStageStartedAt: timestamp("contact_stage_started_at", { withTimezone: true }),
   contactStageCompletedAt: timestamp("contact_stage_completed_at", { withTimezone: true }),
+  // Set once, right before a completed campaign's detail rows (campaign_domains,
+  // domain_crawl_status, guest_post_links, guest_post_prospects) get deleted a
+  // week after completion — a frozen copy of the same numbers the dashboard
+  // tiles show live, so the detail page still has something real to render
+  // once the raw rows are gone. Null means "still has full live data." See
+  // archiveCampaign in src/worker/archiveCampaign.ts.
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedSummary: jsonb("archived_summary"),
+  // Cumulative bytes transferred through the PAID proxy (not the free direct
+  // browser tier) for this campaign, across both crawl and contact stages —
+  // see withBlockedEscalation in runCampaign.ts and lookupWithRetry in
+  // contactStage.ts. Checked against PROXY_BANDWIDTH_CAP_MB before each
+  // proxy-routed browser attempt; once over, further blocked domains this
+  // campaign just stay blocked rather than escalating further. Built
+  // 2026-10-14 after a real cost review found a single campaign had used
+  // $17+ of proxy spend in one day. Also the answer to "how much/where is
+  // proxy actually being used" — queryable per campaign going forward,
+  // not just a number that lived in memory and vanished.
+  proxyBytesUsed: bigint("proxy_bytes_used", { mode: "number" }).notNull().default(0),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------
@@ -342,6 +361,28 @@ export const guestPostProspects = pgTable(
     index("guest_post_prospects_campaign_created_idx").on(t.campaignId, t.createdAt),
   ]
 ).enableRLS();
+
+/* ---------------------------------------------------------------------------
+ * domain_contact_ledger — the ONE thing that must survive a campaign's data
+ * being deleted for the 90-day global dedup (findClaimedGlobally) to keep
+ * meaning anything. Narrower than guestPostProspects' own "claimed" idea: a
+ * domain only lands here once Stage 3 actually found a real email or
+ * contact form for it — not merely kept as a prospect — since that's the
+ * actual spam risk (a second campaign re-finding and re-emailing a domain
+ * we already have a working contact for), not "we once considered this
+ * domain." One row per domain; contactedAt gets refreshed forward every
+ * time it's found again, since that's what determines when the cooldown
+ * actually ends. Pruning entries older than the dedup window is a separate,
+ * ongoing job (see pruneDomainContactLedger in filterResults.ts) — nothing
+ * here expires on its own.
+ * ------------------------------------------------------------------------- */
+
+export const domainContactLedger = pgTable("domain_contact_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domain: text("domain").notNull().unique(),
+  contactedAt: timestamp("contacted_at", { withTimezone: true }).notNull(),
+  campaignId: uuid("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+}).enableRLS();
 
 /* ---------------------------------------------------------------------------
  * Relations

@@ -1,7 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client.js";
 import {
-  findAlreadyFoundDomains,
   findClaimedGlobally,
   getDedupDays,
   getCampaignLinks,
@@ -34,22 +33,19 @@ async function decideAndSave(
   campaignId: string,
   candidates: Candidate[],
   doNotContact: Set<string>,
-  alreadyFound: Set<string>,
   dedupDays: number
 ): Promise<{ prospects: ProspectInput[]; byReason: Record<string, number> }> {
   // Every run, not just monitoring: a domain ANY other campaign already
-  // claimed, whether or not contact lookup has even run on it yet.
+  // claimed (a real contact found for it, see findClaimedGlobally) — the
+  // ONE dedup check, used everywhere, same rule for every kind of campaign.
   const claimedByOthers = await findClaimedGlobally(campaignId, candidates.map((c) => c.rootDomain), dedupDays, executor);
 
   const byReason: Record<string, number> = {};
   const prospects: ProspectInput[] = candidates.map((c) => {
-    // The real exclusion rules (do-not-contact, big brands...) always win, then a
-    // teammate's claim (checked before contact lookup wastes effort on it), then
-    // "already found" by an older, unrelated campaign.
-    const reason =
-      exclusionReason(c.rootDomain, doNotContact) ||
-      (claimedByOthers.has(c.rootDomain) ? "claimed_by_teammate" : "") ||
-      (alreadyFound.has(c.rootDomain) ? "already_found" : "");
+    // The real exclusion rules (do-not-contact, big brands...) always win,
+    // then a teammate's claim (checked before contact lookup wastes effort
+    // on it).
+    const reason = exclusionReason(c.rootDomain, doNotContact) || (claimedByOthers.has(c.rootDomain) ? "claimed_by_teammate" : "");
     if (reason) byReason[reason] = (byReason[reason] ?? 0) + 1;
     const claim = claimedByOthers.get(c.rootDomain);
     return {
@@ -64,16 +60,8 @@ async function decideAndSave(
   return { prospects, byReason };
 }
 
-async function filterAndSave(
-  campaignId: string,
-  candidates: Candidate[],
-  opts: { incremental?: boolean } = {}
-): Promise<FilterStageResult> {
+async function filterAndSave(campaignId: string, candidates: Candidate[]): Promise<FilterStageResult> {
   const doNotContact = await loadDoNotContactSet();
-  // Monitoring runs only: leads an earlier run already found and looked up.
-  const alreadyFound = opts.incremental
-    ? await findAlreadyFoundDomains(campaignId, candidates.map((c) => c.rootDomain))
-    : new Set<string>();
   const dedupDays = await getDedupDays();
 
   // The claim-check-then-save above is the one place two campaigns could race:
@@ -86,7 +74,7 @@ async function filterAndSave(
   // transaction's lifetime and always releases, success or failure.
   const { prospects, byReason } = await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${DEDUP_LOCK_KEY})`);
-    return decideAndSave(tx, campaignId, candidates, doNotContact, alreadyFound, dedupDays);
+    return decideAndSave(tx, campaignId, candidates, doNotContact, dedupDays);
   });
 
   const excluded = prospects.filter((p) => p.exclusionReason).length;
@@ -97,10 +85,7 @@ async function filterAndSave(
 // build_contact_list.py: dedupe every link down to one row per unique root
 // domain (first occurrence wins), then decide keep/exclude ONCE per target —
 // not once per link row, since 50 links to the same domain is still one prospect.
-export async function runFilterStage(
-  campaignId: string,
-  opts: { incremental?: boolean } = {}
-): Promise<FilterStageResult> {
+export async function runFilterStage(campaignId: string): Promise<FilterStageResult> {
   const links = await getCampaignLinks(campaignId);
 
   const firstSeen = new Map<string, { guestPostUrl: string; externalLink: string }>();
@@ -116,7 +101,7 @@ export async function runFilterStage(
     exampleExternalLink: rep.externalLink,
   }));
 
-  return filterAndSave(campaignId, candidates, opts);
+  return filterAndSave(campaignId, candidates);
 }
 
 // Stage 2 for "direct" campaigns. The uploaded domains ARE the targets —

@@ -123,7 +123,7 @@ export default async function CampaignsPage() {
                     })}
                   </td>
                   <td className="px-5 py-4">
-                    {(c.status === "completed" || c.domainsChecked > 0 || c.keptProspects > 0) && (
+                    {!c.archivedAt && (c.status === "completed" || c.domainsChecked > 0 || c.keptProspects > 0) && (
                       <div className="flex gap-2">
                         <ExportMenu campaignId={c.id} mode={c.mode} format="xlsx" label="Excel" />
                         <ExportMenu campaignId={c.id} mode={c.mode} format="csv" label="CSV" />

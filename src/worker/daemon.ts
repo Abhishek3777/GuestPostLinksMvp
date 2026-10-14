@@ -4,6 +4,7 @@ import { runCampaignWorker } from "./runCampaign.js";
 import { runContactStage } from "./contactStage.js";
 import { resetFailedContacts, updateContactStageStatus } from "../db/contactResults.js";
 import { closeRescueFetchers } from "../rescueFetchers.js";
+import { archiveCampaign, findCampaignsEligibleForArchiving } from "./archiveCampaign.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs several at
 // a time. Run it as its own service (PM2 / systemd), separate from the
@@ -24,6 +25,14 @@ import { closeRescueFetchers } from "../rescueFetchers.js";
 // without ever double-claiming the same campaign.
 const MAX_CONCURRENT_CAMPAIGNS = Math.max(1, Number(process.env.MAX_CONCURRENT_CAMPAIGNS) || 3);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 5000;
+
+// Separate, slow-paced sweep (campaignDeletionRequirements.md): archives any
+// campaign completed 7+ days ago — freezes its dashboard summary, then
+// deletes its detail rows. Independent of the job-claiming slots above (this
+// isn't a queued "job", just a periodic maintenance pass), so it gets its own
+// loop with its own, much longer interval — no need to check every 5s for
+// something that only ever changes once a day at most.
+const ARCHIVE_SWEEP_INTERVAL_MS = Number(process.env.ARCHIVE_SWEEP_INTERVAL_MS) || 6 * 60 * 60 * 1000;
 
 // A stop signal ends the process straight away. The job in flight stays marked
 // "running" in the database, which is exactly what requeueInterruptedJobs()
@@ -118,4 +127,26 @@ async function workerSlot(slot: number): Promise<never> {
   }
 }
 
-await Promise.all(Array.from({ length: MAX_CONCURRENT_CAMPAIGNS }, (_, i) => workerSlot(i + 1)));
+async function archiveSweepLoop(): Promise<never> {
+  while (true) {
+    try {
+      const eligible = await findCampaignsEligibleForArchiving();
+      if (eligible.length > 0) console.log(`[archive] ${eligible.length} campaign(s) eligible for archiving`);
+      for (const campaignId of eligible) {
+        try {
+          await archiveCampaign(campaignId);
+          console.log(`[archive] campaign ${campaignId} archived`);
+        } catch (err) {
+          // One bad campaign must never sink the sweep — it's picked up again
+          // next pass, same as everything else in this worker.
+          console.error(`[archive] campaign ${campaignId} failed to archive:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("[archive] sweep error:", err);
+    }
+    await sleep(ARCHIVE_SWEEP_INTERVAL_MS);
+  }
+}
+
+await Promise.all([...Array.from({ length: MAX_CONCURRENT_CAMPAIGNS }, (_, i) => workerSlot(i + 1)), archiveSweepLoop()]);
