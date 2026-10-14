@@ -66,7 +66,7 @@ export async function extractLinksFromPost(
   // every other site (pageType === "unknown"), check for an explicit "this
   // is an Article" marker — the strongest, most specific signal, and also
   // where the real PUBLISHED date comes from. Reached directly below.
-  const article = detectArticle(res.body);
+  const article = detectArticle(res.body, postUrl);
 
   const parsed = extractArticle(res.body, postUrl);
   if (!parsed) {

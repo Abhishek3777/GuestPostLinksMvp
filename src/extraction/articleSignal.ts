@@ -85,9 +85,88 @@ function articleDateFromTimeTag(html: string): string | null {
   return null;
 }
 
-export function detectArticle(html: string): ArticleDetection {
-  const publishedAt = articleDateFromJsonLd(html) ?? articleDateFromOpenGraph(html) ?? articleDateFromTimeTag(html);
+export function detectArticle(html: string, postUrl: string): ArticleDetection {
+  const publishedAt =
+    articleDateFromJsonLd(html) ??
+    articleDateFromOpenGraph(html) ??
+    articleDateFromTimeTag(html) ??
+    // Gated on the URL already looking like a genuine single-post address —
+    // confirmed live, 2026-10-14: a forum thread-index page (aliensversuspredator.net/talk)
+    // has an <article> tag and several "Started [date] by [user]" rows near
+    // the top, and without this gate the visible-text scan below picks up
+    // the FIRST thread's date as if it were the page's own publish date —
+    // actively wrong, not just unconfirmed, since an old static index page
+    // can land on a recent-looking date purely by coincidence. A listing/
+    // index URL ("/talk", "/blog", "/category/x") fails looksLikePostUrl,
+    // so this never runs for it; every real single-article URL in testing
+    // (long, descriptive, title-derived slugs) passes it fine.
+    (looksLikePostUrl(postUrl) ? dateFromVisibleText(html) : null);
   return { isArticle: publishedAt !== null, publishedAt };
+}
+
+const MONTH_NAMES: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+const MONTH_ALTERNATION = Object.keys(MONTH_NAMES).join("|");
+const MONTH_FIRST_RE = new RegExp(`\\b(${MONTH_ALTERNATION})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b`, "i");
+const DAY_FIRST_RE = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})\\.?,?\\s+(\\d{4})\\b`, "i");
+
+function toIsoDate(year: number, month: number, day: number): string | null {
+  const currentYear = new Date().getUTCFullYear();
+  if (year < 1995 || year > currentYear + 1 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getTime() > Date.now()) return null; // future-dated match is not a real publish date
+  return date.toISOString();
+}
+
+// Last-resort date signal for pages whose real publish date is plain,
+// unstructured text — no <time> tag, no JSON-LD, no OG meta. Confirmed
+// live, 2026-10-14: 4 real examples (burberrypurses.us, cameraarmor.us,
+// blog.storymirror.com, campbellfordcrc.ca) all render a genuine, correct
+// date as ordinary styled text — "Date: July 28, 2019", "September 30,
+// 2018", "18 October 2022", a day/month-year badge — and nothing above
+// catches any of them, so they came back fully "undated" and were kept
+// outright regardless of real age (2018-2022 content sliding through a
+// 9-day campaign window).
+//
+// Deliberately scoped to the ~6000 raw characters right after the page's
+// own <h1>/<article> heading (where a byline/dateline normally sits), not
+// the whole page — matching anywhere would risk picking up an unrelated
+// date from a sidebar "recent posts" widget, a comment timestamp, or body
+// text that happens to mention a historical date in passing. And
+// deliberately month-NAME-based only, never a bare numeric date like
+// 09/30/2018 — numeric dates are ambiguous (MM/DD vs DD/MM) and far more
+// likely to collide with something unrelated (a price, a phone number); a
+// literal month name is a much more specific, much safer signal.
+export function dateFromVisibleText(html: string): string | null {
+  const heading = /<h1\b[^>]*>|<article\b[^>]*>/i.exec(html);
+  if (!heading) return null;
+
+  const text = html
+    .slice(heading.index, heading.index + 6000)
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ");
+
+  const monthFirst = MONTH_FIRST_RE.exec(text);
+  const dayFirst = DAY_FIRST_RE.exec(text);
+
+  // Whichever pattern matched EARLIER in the scoped text wins — that's the
+  // one closest to the heading, i.e. the actual dateline, not a later,
+  // coincidental date-shaped mention further into the body.
+  if (monthFirst && (!dayFirst || monthFirst.index <= dayFirst.index)) {
+    const month = MONTH_NAMES[monthFirst[1].toLowerCase()];
+    return toIsoDate(Number(monthFirst[3]), month, Number(monthFirst[2]));
+  }
+  if (dayFirst) {
+    const month = MONTH_NAMES[dayFirst[2].toLowerCase()];
+    return toIsoDate(Number(dayFirst[3]), month, Number(dayFirst[1]));
+  }
+  return null;
 }
 
 // Last-resort date signal, used only when nothing on the page itself gives
