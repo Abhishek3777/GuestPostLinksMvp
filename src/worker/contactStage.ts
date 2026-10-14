@@ -13,17 +13,27 @@ import { loadDoNotContactSet } from "../db/filterResults.js";
 import { exclusionReason } from "../filter/exclusions.js";
 import { contentLooksLikeGambling } from "../filter/gambling.js";
 import { looksLikeGovOrInstitutional } from "../filter/institutional.js";
-import { looksLikeScholarshipDomain, classifyBusinessRelevanceCached } from "../filter/businessRelevance.js";
 import { makePauseCheck } from "./pauseCheck.js";
-import { browserLimit, getBrowserFetcher, getCapsolverFetcher } from "../rescueFetchers.js";
+import {
+  browserLimit,
+  getBrowserFetcher,
+  getDirectBrowserFetcher,
+  getCapsolverFetcher,
+  withProxyBudgetTracking,
+} from "../rescueFetchers.js";
+import { isOverProxyBudget } from "../db/writeResults.js";
 
-// The three new checks from docs/prospect-relevance-filter.md, run in this
-// order against the homepage Stage 3 just fetched anyway (no extra crawl):
-// gambling and institutional are cheap/deterministic so they go first;
-// the scholarship keyword is a free pre-filter for the AI step; the AI call
-// itself (cached per domain — see domain_relevance_cache) only runs if
-// nothing else already decided it. Returns null when nothing fires (keep
-// as a normal prospect, no change from today's behavior).
+// The "is this actually a business" AI check (src/filter/businessRelevance.ts)
+// is deliberately NOT called here anymore (2026-10-14, team decision) — too
+// many real, legitimate businesses were coming back as false positives, and
+// since its answer was already not being acted on (the exclusion itself was
+// disabled a day earlier), paying for the OpenAI call for a verdict nobody
+// uses was pure wasted spend. Stopped calling it entirely rather than just
+// ignoring the result. The file, the domain_relevance_cache table, and
+// classifyBusinessRelevanceCached itself are untouched — this can be wired
+// back in here once the classifier is actually fixed. Only gambling and
+// government/institutional (cheap, deterministic, never the problem) still
+// run here.
 async function checkRelevance(rootDomain: string, homepageHtml: string): Promise<{ reason: string; note: string } | null> {
   if (contentLooksLikeGambling(homepageHtml)) {
     return { reason: "gambling_content", note: "homepage content reads as gambling/casino" };
@@ -31,17 +41,6 @@ async function checkRelevance(rootDomain: string, homepageHtml: string): Promise
   if (looksLikeGovOrInstitutional(rootDomain, homepageHtml)) {
     return { reason: "government_or_institutional", note: "looks like a government or financial-institution site" };
   }
-  // "not_a_business" exclusion disabled for now (2026-10-13) — too many real,
-  // legitimate businesses offering real services were coming back as false
-  // positives. Per team decision: merge these back into the main pipeline
-  // (contact them like any other kept prospect) until the classifier is
-  // tuned properly. Still calling classifyBusinessRelevanceCached below,
-  // which still writes to domain_relevance_cache regardless of what we do
-  // with its answer — so the data needed to evaluate and re-enable this
-  // later keeps accumulating the whole time, nothing lost by waiting.
-  if (looksLikeScholarshipDomain(rootDomain)) return null;
-  const { decision, reason } = await classifyBusinessRelevanceCached(rootDomain, homepageHtml);
-  if (decision === "unsure") return { reason: "needs_review", note: reason };
   return null;
 }
 
@@ -69,7 +68,7 @@ const PER_PROSPECT_TIMEOUT_MS = 5 * 60_000;
 // this is the plain-HTTP retry; a real block still only escalates to a browser once,
 // below, never repeated.
 const RETRY_ONCE = new Set<string>(["timeout", "error"]);
-async function lookupWithRetry(domain: string): Promise<ContactResult> {
+async function lookupWithRetry(domain: string, campaignId: string): Promise<ContactResult> {
   const first = await findContact(domain);
   if (RETRY_ONCE.has(first.status)) {
     await sleep(4000);
@@ -85,8 +84,21 @@ async function lookupWithRetry(domain: string): Promise<ContactResult> {
   // script, just automatic and one-shot — no repeated hammering of a site
   // that already said no.
   return browserLimit(async () => {
+    // A plain browser, no proxy, tried first — free, and confirmed live
+    // (2026-10-14) to already resolve 2 of 10 real previously-blocked
+    // domains on its own. Only domains still blocked after this reach the
+    // paid proxy below.
+    const direct = await getDirectBrowserFetcher();
+    const viaDirect = await findContact(domain, direct.fetch);
+    if (viaDirect.status !== "blocked") return viaDirect;
+
+    // Over this campaign's proxy budget: stop escalating further domains to
+    // the paid proxy tier (CapSolver, below, is unaffected — a different,
+    // separately-bounded cost).
+    if (await isOverProxyBudget(campaignId)) return viaDirect;
+
     const browser = await getBrowserFetcher();
-    const viaBrowser = await findContact(domain, browser.fetch);
+    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser));
     if (viaBrowser.status !== "blocked") return viaBrowser;
 
     const capsolver = getCapsolverFetcher();
@@ -135,7 +147,11 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
           // One bad site must never sink the whole contact stage: whatever goes
           // wrong is recorded as THAT prospect's result and the rest carry on.
           try {
-            const result = await withTimeout(lookupWithRetry(prospect.rootDomain), PER_PROSPECT_TIMEOUT_MS, prospect.rootDomain);
+            const result = await withTimeout(
+              lookupWithRetry(prospect.rootDomain, campaignId),
+              PER_PROSPECT_TIMEOUT_MS,
+              prospect.rootDomain
+            );
 
             // Gambling / government-institutional / "is this actually a
             // business" — checked against the homepage we already have in
@@ -164,13 +180,13 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
                 saveContactExclusion(prospect.id, "redirected", `redirected from ${prospect.rootDomain} to ${destination}`, destination)
               );
             } else {
-              await dbWriteLimit(() => saveContactResult(prospect.id, result));
+              await dbWriteLimit(() => saveContactResult(prospect.id, prospect.rootDomain, campaignId, result));
             }
           } catch (err) {
             console.error(`[contact] ${prospect.rootDomain} failed unexpectedly:`, err);
             try {
               await dbWriteLimit(() =>
-                saveContactResult(prospect.id, {
+                saveContactResult(prospect.id, prospect.rootDomain, campaignId, {
                   status: "error",
                   emailAddress: null,
                   contactFormUrl: null,

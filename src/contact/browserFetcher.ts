@@ -19,9 +19,23 @@ const CHALLENGE_MARKERS =
 const MIN_REAL_PAGE_TEXT = 400;
 
 export interface BrowserFetcher {
-  fetch: (url: string) => Promise<FetchResult>;
+  fetch: (url: string) => Promise<FetchResult & { bytesTransferred: number }>;
   close: () => Promise<void>;
 }
+
+// Resource types blocked outright before they're ever requested (route.abort()
+// — zero bytes, not just ignored after download). We only ever read
+// page.content()/innerText afterward, never look at how anything actually
+// renders, and the bot-challenge scripts this exists to get past are driven
+// by JS execution, not images/fonts/media — those are pure bandwidth with no
+// purpose here. This is specifically what 2026-10-14's proxy-cost review
+// found: a real browser loads a full page's worth of assets through a paid,
+// metered residential proxy, often 10-100x heavier than the plain HTML these
+// fetches actually need. Stylesheets are deliberately NOT blocked — unlike
+// images/fonts/media, some anti-bot checks genuinely depend on computed CSS
+// state, and CSS is small enough that blocking it isn't where the real
+// savings are anyway.
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 // proxyEnvVar: which env var to read for the proxy (see util.ts's
 // playwrightProxy) — local scripts want their own .env's PROXY_URL, the
@@ -35,10 +49,25 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
   }
   const browser = await chromium.launch({ headless: true, proxy: playwrightProxy(proxyEnvVar) });
 
-  async function fetchPage(url: string): Promise<FetchResult> {
+  // Unchanged below this line: the existing challenge-detection/success/
+  // failure logic is deliberately left untouched, line for line — only a
+  // resource filter and a passive byte counter are added alongside it,
+  // neither of which affects what this function decides about a page.
+  async function fetchPageInner(url: string, bytesRef: { value: number }): Promise<FetchResult> {
     await sleep(1000); // never hit a site back-to-back
     const context = await browser.newContext({ userAgent: USER_AGENT, locale: "en-US", viewport: { width: 1366, height: 768 } });
     const page = await context.newPage();
+    await page.route("**/*", (route) => {
+      const type = route.request().resourceType();
+      if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
+      return route.continue();
+    });
+    page.on("response", (response) => {
+      response
+        .body()
+        .then((b) => (bytesRef.value += b.length))
+        .catch(() => undefined); // body() can fail for aborted/redirected requests — fine to just skip counting those
+    });
     try {
       const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       // Give a JavaScript challenge time to solve itself and redirect.
@@ -78,6 +107,12 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
     } finally {
       await context.close();
     }
+  }
+
+  async function fetchPage(url: string): Promise<FetchResult & { bytesTransferred: number }> {
+    const bytesRef = { value: 0 };
+    const result = await fetchPageInner(url, bytesRef);
+    return { ...result, bytesTransferred: bytesRef.value };
   }
 
   return { fetch: fetchPage, close: () => browser.close() };

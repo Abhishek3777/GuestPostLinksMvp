@@ -23,6 +23,7 @@ import { CampaignTabs } from "@/components/CampaignTabs";
 import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
 import { DomainStatusSection } from "@/components/DomainStatusSection";
 import { ProspectsSection } from "@/components/ProspectsSection";
+import { ArchivedCampaignSummary } from "@/components/ArchivedCampaignSummary";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,37 @@ export default async function CampaignDetailPage({
   if (!detail) notFound();
 
   const { campaign, domainStatuses, domainStatusesTotal, domainStatusesPageCount, domainStatusCounts, linksCount, totalDomains } = detail;
+
+  // Detail rows are gone (archiveCampaign ran a week after completion) —
+  // render the frozen summary instead of live sections. None of the
+  // action buttons below make sense on data that no longer exists: nothing
+  // to export, nothing to retry, no contact stage left to run, nothing to
+  // pause. Delete still applies — that's a different, more drastic action
+  // on the campaign row itself, not the detail data this page is about.
+  if (campaign.archivedAt && campaign.archivedSummary) {
+    return (
+      <div className="flex flex-col gap-8">
+        <div>
+          <Link href="/" className="mb-2 inline-flex items-center gap-1 text-sm text-muted hover:text-text">
+            <ArrowLeft size={14} /> Campaigns
+          </Link>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-text">{campaign.name}</h1>
+              <StatusBadge status="completed" />
+            </div>
+            <DeleteCampaignButton campaignId={campaign.id} campaignName={campaign.name} />
+          </div>
+          {user.role === "admin" && (
+            <p className="mt-1 text-sm text-muted">
+              Started by <span className="font-medium text-text">{(await getCampaignOwnerEmail(campaign.createdBy)) ?? "Unassigned"}</span>
+            </p>
+          )}
+        </div>
+        <ArchivedCampaignSummary summary={campaign.archivedSummary} archivedAt={new Date(campaign.archivedAt)} />
+      </div>
+    );
+  }
 
   const contactStageStarted = campaign.contactStageStatus !== "not_started";
 

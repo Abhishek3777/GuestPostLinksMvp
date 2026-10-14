@@ -81,7 +81,7 @@ await Promise.all(
         if (moved) {
           await saveContactExclusion(prospect.id, moved.reason, `redirects to / moved to ${moved.destination} (${moved.reason})`, moved.destination);
         } else {
-          await saveContactResult(prospect.id, result);
+          await saveContactResult(prospect.id, prospect.rootDomain, campaignId, result);
         }
 
         done++;

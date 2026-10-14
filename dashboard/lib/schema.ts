@@ -5,7 +5,7 @@
 // is the source of truth for migrations; this file must stay in sync with it
 // by hand.
 import { relations } from "drizzle-orm";
-import { boolean, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const domainStatus = pgEnum("domain_status", [
   "success",
@@ -73,6 +73,17 @@ export const campaigns = pgTable("campaigns", {
   contactStageStatus: contactStageStatus("contact_stage_status").notNull().default("not_started"),
   contactStageStartedAt: timestamp("contact_stage_started_at", { withTimezone: true }),
   contactStageCompletedAt: timestamp("contact_stage_completed_at", { withTimezone: true }),
+  // Set once, right before a completed campaign's detail rows (campaign_domains,
+  // domain_crawl_status, guest_post_links, guest_post_prospects) get deleted a
+  // week after completion — a frozen copy of the same numbers the dashboard
+  // tiles show live, so the detail page still has something real to render
+  // once the raw rows are gone. Null means "still has full live data."
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedSummary: jsonb("archived_summary").$type<ArchivedSummary>(),
+  // Cumulative bytes transferred through the paid proxy for this campaign —
+  // see the matching comment in src/db/schema.ts. Queryable here for "how
+  // much/where is proxy usage happening" questions.
+  proxyBytesUsed: bigint("proxy_bytes_used", { mode: "number" }).notNull().default(0),
 });
 
 export const campaignDomains = pgTable(
@@ -182,9 +193,38 @@ export const guestPostProspects = pgTable(
   ]
 );
 
+// The one thing that must survive a campaign's data being deleted for the
+// 90-day global dedup to keep working — see the matching comment in
+// src/db/schema.ts.
+export const domainContactLedger = pgTable("domain_contact_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  domain: text("domain").notNull().unique(),
+  contactedAt: timestamp("contacted_at", { withTimezone: true }).notNull(),
+  campaignId: uuid("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+});
+
 export const campaignsRelations = relations(campaigns, ({ many }) => ({
   domains: many(campaignDomains),
   domainStatuses: many(domainCrawlStatus),
   links: many(guestPostLinks),
   prospects: many(guestPostProspects),
 }));
+
+// The shape of campaigns.archivedSummary, frozen by archiveCampaign in
+// src/worker/archiveCampaign.ts — kept in sync with that file by hand, same
+// as the rest of this schema mirrors ../src/db/schema.ts.
+export interface ArchivedSummary {
+  totalDomains: number;
+  linksCount: number;
+  domainStatusCounts: { status: string; count: number }[];
+  prospectReasonCounts: { reason: string | null; count: number }[];
+  contactStats: {
+    kept: number;
+    looked: number;
+    reached: number;
+    formsConfirmed: number;
+    totalEmails: number;
+    hasEmailStatus: number;
+  };
+  contactFilterCounts: Record<string, number>;
+}
