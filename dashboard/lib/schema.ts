@@ -5,7 +5,7 @@
 // is the source of truth for migrations; this file must stay in sync with it
 // by hand.
 import { relations } from "drizzle-orm";
-import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, date, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const domainStatus = pgEnum("domain_status", [
   "success",
@@ -228,3 +228,35 @@ export interface ArchivedSummary {
   };
   contactFilterCounts: Record<string, number>;
 }
+
+/* ---------------------------------------------------------------------------
+ * Cost dashboard (admin /costs page). Three small tables:
+ *  - cost_ledger: manual top-ups for prepaid services (2captcha, CapSolver,
+ *    DataImpulse) — their APIs only expose a balance, not payment history.
+ *  - cost_balance_snapshots: periodic balance readings; a drop between two
+ *    readings is consumption.
+ *  - cost_railway_daily: priced Railway usage per day per service, pulled
+ *    from Railway's GraphQL usage API.
+ * ------------------------------------------------------------------------- */
+
+export const costLedger = pgTable("cost_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  service: text("service").notNull(),
+  paidOn: date("paid_on").notNull(),
+  amount: doublePrecision("amount").notNull(),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+export const costBalanceSnapshots = pgTable("cost_balance_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  service: text("service").notNull(),
+  balance: doublePrecision("balance").notNull(),
+  takenAt: timestamp("taken_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("cost_balance_snapshots_service_taken_idx").on(t.service, t.takenAt)]).enableRLS();
+
+export const costRailwayDaily = pgTable("cost_railway_daily", {
+  day: date("day").notNull(),
+  label: text("label").notNull(),
+  cost: doublePrecision("cost").notNull(),
+}, (t) => [primaryKey({ columns: [t.day, t.label] })]).enableRLS();
