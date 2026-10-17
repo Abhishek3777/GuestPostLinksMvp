@@ -33,6 +33,12 @@ path" at the matching `railway.*.json`.
 **dashboard**
 - `DATABASE_URL` — required
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — required **at build time** (they are baked into the browser bundle; the Dockerfile takes them as build args, which Railway fills from the service's variables)
+- optional, for the admin **/costs** page (infra spend): `RAILWAY_API_TOKEN` (an
+  *account* token — Railway → Account Settings → Tokens → "No workspace" — so it
+  can read every workspace), `TWO_CAPTCHA_API_KEY`, `CAPSOLVER_API_KEY`. The page
+  works without them but shows no Railway/balance data. Run
+  `dashboard/scripts/cost-tables.sql` once to create its three tables. Optional
+  `USD_INR_RATE` is the fallback if the live exchange-rate lookup fails.
 
 Never put a `.env` file in the image — `.dockerignore` keeps them out.
 

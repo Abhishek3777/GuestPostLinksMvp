@@ -6,22 +6,31 @@ import * as schema from "./schema.js";
 const connectionString = process.env.DATABASE_URL!;
 
 const client = postgres(connectionString, {
-  // Supabase's pooler only hands out 15 real Postgres connections total
-  // (Nano compute tier), shared across this worker AND the dashboard. This
-  // used to be 25 — on its own, more than the entire pool — which meant the
-  // worker could starve the dashboard of connections whenever a campaign was
-  // actively crawling (confirmed: dashboard queries were fast to execute but
-  // slow end-to-end, stuck queueing for a free pooler slot). 10 here + 4 on
-  // the dashboard (dashboard/lib/db.ts) leaves 1 spare for ad-hoc scripts,
-  // and stays under the 15 cap even if both are maxed out simultaneously.
+  // Supabase's pooler caps out at 15 real connections total (confirmed live,
+  // 2026-10-15 — probed empirically, 15 works, 20 fails with EMAXCONNSESSION),
+  // shared across this worker AND the dashboard. This used to be 25 — on its
+  // own, more than the entire pool — which meant the worker could starve the
+  // dashboard of connections whenever a campaign was actively crawling
+  // (confirmed: dashboard queries were fast to execute but slow end-to-end,
+  // stuck queueing for a free pooler slot). 10 here + a modest share on the
+  // dashboard (dashboard/lib/db.ts) leaves headroom for ad-hoc scripts, and
+  // stays under the 15 cap even if both are maxed out simultaneously.
   // Per-domain DB writes are a small, fast fraction of crawl time (dominated
   // by network fetches), so this shouldn't meaningfully affect crawl speed.
   max: 10,
-  // Supabase's transaction-mode pooler (port 6543) does not support prepared
-  // statements — required off. Same setup as the other Supabase-backed apps.
-  prepare: false,
-  // Supabase requires TLS. DATABASE_SSL=disable exists only so the worker can be
-  // tested against a plain local Postgres.
+  // Session-mode pooler (port 5432 — see DATABASE_URL), not transaction-mode
+  // (6543). This worker is a long-lived process that holds connections open
+  // for its whole lifetime, which is exactly what session mode is for: one
+  // stable backend connection per client for the life of the session, so a
+  // real connection failure surfaces as a real, catchable error instead of
+  // silently vanishing into the pooler's internal transaction-reassignment
+  // bookkeeping. Transaction mode is the right fit for brief, one-shot
+  // callers (ad-hoc scripts), not an always-running worker — confirmed via
+  // Railway's own HTTP logs showing the dashboard (same shared pool) hanging
+  // for minutes with zero errors before this fix.
+  // Session mode supports real prepared statements (each client keeps the
+  // same backend connection), so prepare is left at its default (true) —
+  // unlike transaction mode, which requires it off.
   ssl: process.env.DATABASE_SSL === "disable" ? false : "require",
   // This DB is shared with ORR (dev project) — our tables live in their own
   // "guestpost" schema, not "public", so they never collide with ORR's own.
