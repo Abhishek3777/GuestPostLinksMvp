@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS cost_railway_daily (
   cost double precision NOT NULL,
   PRIMARY KEY (day, label)
 );
+CREATE TABLE IF NOT EXISTS cost_vercel_daily (
+  day date NOT NULL,
+  label text NOT NULL,
+  cost double precision NOT NULL,
+  PRIMARY KEY (day, label)
+);
+ALTER TABLE cost_vercel_daily ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cost_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cost_balance_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cost_railway_daily ENABLE ROW LEVEL SECURITY;

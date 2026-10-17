@@ -82,6 +82,11 @@ export function CostDashboard({ data }: { data: CostData }) {
     for (const d of dates) for (const [k, v] of Object.entries(data.railwaySub[d] ?? {})) sub[k] = (sub[k] ?? 0) + v;
     return Object.entries(sub).sort((a, z) => z[1] - a[1]);
   }, [data, dates]);
+  const vercelSub = useMemo(() => {
+    const sub: Record<string, number> = {};
+    for (const d of dates) for (const [k, v] of Object.entries(data.vercelSub[d] ?? {})) sub[k] = (sub[k] ?? 0) + v;
+    return Object.entries(sub).sort((a, z) => z[1] - a[1]);
+  }, [data, dates]);
 
   const banners: { title: string; body: string }[] = [];
   const missing = PREPAID.filter((s) => !data.ledger.some((t) => t.service === s));
@@ -282,6 +287,22 @@ export function CostDashboard({ data }: { data: CostData }) {
               </table>
             </details>
           )}
+          {vercelSub.length > 0 && (
+            <details className="mt-3 text-sm">
+              <summary className="cursor-pointer text-muted">Vercel by item</summary>
+              <table className="mt-2 w-full tabular-nums">
+                <tbody>
+                  {vercelSub.map(([k, v]) => (
+                    <tr key={k} className="border-t border-border">
+                      <td className="py-1.5">{k}</td>
+                      <td className="py-1.5 text-right">{money(v)}</td>
+                      <td className="py-1.5 text-right text-muted">{money((v / n) * 30)}/mo</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          )}
         </Card>
       </div>
 
@@ -349,7 +370,9 @@ export function CostDashboard({ data }: { data: CostData }) {
                 <td className="py-1.5">{t.service}</td>
                 <td className="py-1.5">{t.date}</td>
                 <td className="py-1.5 text-right">{money(t.amount)}</td>
-                <td className="py-1.5 pl-4">detected from balance increase</td>
+                <td className="py-1.5 pl-4">
+                  {t.counted ? "auto-detected from balance jump (counted)" : "auto-detected, already covered by your manual entry"}
+                </td>
                 <td />
               </tr>
             ))}
@@ -357,7 +380,7 @@ export function CostDashboard({ data }: { data: CostData }) {
         </table>
         {data.ledger.length === 0 && <p className="py-3 text-sm text-muted">No top-ups recorded yet.</p>}
         <p className="mt-3 text-xs text-muted">
-          Amounts are what left the bank: each top-up counts on the day it was paid. Railway is real usage priced per day; Vercel and Supabase are flat monthly plans spread across the month. DataImpulse has no usage API, so it relies on the top-ups entered here.
+          Amounts are what left the bank: each top-up counts on the day it was paid. 2captcha and CapSolver top-ups are picked up automatically when their balance jumps; add DataImpulse top-ups by hand. Railway is real usage priced per day; Vercel and Supabase are flat monthly plans spread across the month. DataImpulse has no usage API, so it relies on the top-ups entered here.
         </p>
       </Card>
     </div>
