@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { ProportionBar, type Segment } from "./ProportionBar";
+import { DomainLink } from "./DomainLink";
 
 const STATUS_TONE: Record<string, Segment["tone"]> = {
   success: "success",
@@ -163,7 +164,12 @@ export function DomainStatusSection({
               <tbody>
                 {rows.map((d) => (
                   <tr key={d.id} className="border-b border-border last:border-0 hover:bg-surface-2">
-                    <td className="px-5 py-3 font-medium text-text">{d.domain}</td>
+                    <td className="px-5 py-3 font-medium text-text">
+                      <span className="inline-flex items-center gap-1.5">
+                        {d.domain}
+                        <DomainLink domain={d.domain} />
+                      </span>
+                    </td>
                     <td className="px-5 py-3">
                       <StatusBadge status={d.status} />
                     </td>

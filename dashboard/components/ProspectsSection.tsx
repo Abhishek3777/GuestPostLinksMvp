@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { ProportionBar, type Segment } from "./ProportionBar";
+import { DomainLink } from "./DomainLink";
 import { claimedByTeammateNote } from "@/lib/campaignCsv";
 import type { ContactFilterKey } from "@/services/campaigns.service";
 
@@ -202,7 +203,12 @@ export function ProspectsSection({
               <tbody>
                 {rows.map((p) => (
                   <tr key={p.id} className="border-b border-border last:border-0 hover:bg-surface-2">
-                    <td className="px-5 py-3 font-medium text-text">{p.rootDomain}</td>
+                    <td className="px-5 py-3 font-medium text-text">
+                      <span className="inline-flex items-center gap-1.5">
+                        {p.rootDomain}
+                        <DomainLink domain={p.rootDomain} />
+                      </span>
+                    </td>
                     <td className="px-5 py-3">
                       {p.exclusionReason ? (
                         <div className="flex flex-col items-start gap-1">
