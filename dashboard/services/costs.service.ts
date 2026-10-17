@@ -1,6 +1,6 @@
 import { asc, desc, eq, gte } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { costBalanceSnapshots, costLedger, costRailwayDaily } from "@/lib/schema";
+import { costBalanceSnapshots, costLedger, costRailwayDaily, costVercelDaily } from "@/lib/schema";
 
 // Flat monthly plans — spread evenly over the days of each month.
 export const FIXED_COSTS = [
@@ -26,19 +26,22 @@ export interface LedgerEntry {
 export interface CostData {
   today: string;
   dates: string[];
-  /** Prepaid services counted when you pay (top-up date). */
+  /** Cost per day per service; prepaid services count on the day they were paid. */
   cash: DailyByService;
-  /** Prepaid services counted when used (balance drops between snapshots). */
-  acc: DailyByService;
   railwaySub: Record<string, Record<string, number>>;
+  /** Vercel billed items per day (Pro, extra seats, usage); empty until a Vercel token is set. */
+  vercelSub: Record<string, Record<string, number>>;
   balances: Record<string, number | null>;
   balancesAt: string | null;
-  firstSnap: Record<string, string>;
   ledger: LedgerEntry[];
-  detected: { service: string; date: string; amount: number }[];
+  /** Top-ups spotted from a balance jump; `counted` is false when a manual entry already covers it. */
+  detected: { service: string; date: string; amount: number; counted: boolean }[];
   collecting: boolean;
   fx: { rate: number; source: "live" | "fallback"; asOf: string | null };
 }
+
+// A balance rise smaller than this isn't treated as a top-up (rounding, refunds).
+const MIN_DETECTED_TOPUP = 1;
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const addDays = (s: string, n: number) => {
@@ -74,13 +77,39 @@ async function getUsdInr(): Promise<CostData["fx"]> {
   return { rate: FALLBACK_USD_INR, source: "fallback", asOf: null };
 }
 
+export function detectTopups(
+  snaps: { service: string; balance: number; takenAt: Date }[],
+  ledger: { service: string; paidOn: string }[],
+) {
+  const detected: CostData["detected"] = [];
+  const latest: Record<string, { balance: number; at: Date }> = {};
+  for (const svc of PREPAID) {
+    let prev: number | null = null;
+    for (const s of snaps) {
+      if (s.service !== svc) continue;
+      latest[svc] = { balance: s.balance, at: s.takenAt };
+      if (prev !== null && s.balance - prev >= MIN_DETECTED_TOPUP) {
+        const date = ymd(s.takenAt);
+        const amount = Math.round((s.balance - prev) * 100) / 100;
+        const duplicate = ledger.some(
+          (t) => t.service === svc && (t.paidOn === date || t.paidOn === addDays(date, -1) || t.paidOn === addDays(date, 1)),
+        );
+        detected.push({ service: svc, date, amount, counted: !duplicate });
+      }
+      prev = s.balance;
+    }
+  }
+  return { detected, latest };
+}
+
 export async function getCostData(collecting: boolean): Promise<CostData> {
   const today = ymd(new Date());
   const startDay = addDays(today, -89);
 
-  const [fx, railwayRows, ledgerRows, snaps] = await Promise.all([
+  const [fx, railwayRows, vercelRows, ledgerRows, snaps] = await Promise.all([
     getUsdInr(),
     db.select().from(costRailwayDaily).where(gte(costRailwayDaily.day, startDay)),
+    db.select().from(costVercelDaily).where(gte(costVercelDaily.day, startDay)),
     db.select().from(costLedger).orderBy(desc(costLedger.paidOn)),
     db.select().from(costBalanceSnapshots).orderBy(asc(costBalanceSnapshots.takenAt)),
   ]);
@@ -88,22 +117,28 @@ export async function getCostData(collecting: boolean): Promise<CostData> {
   const dates: string[] = [];
   for (let d = startDay; d <= today; d = addDays(d, 1)) dates.push(d);
   const cash: DailyByService = {};
-  const acc: DailyByService = {};
-  for (const d of dates) {
-    cash[d] = {};
-    acc[d] = {};
-  }
+  for (const d of dates) cash[d] = {};
 
-  // Railway: priced actual usage (today is partial). Same on both bases.
+  // Railway: priced actual usage (today is partial).
   const railwaySub: CostData["railwaySub"] = {};
   for (const r of railwayRows) {
     if (!cash[r.day]) continue;
     (railwaySub[r.day] ??= {})[r.label] = r.cost;
-    cash[r.day].Railway = acc[r.day].Railway = (cash[r.day].Railway ?? 0) + r.cost;
+    cash[r.day].Railway = (cash[r.day].Railway ?? 0) + r.cost;
   }
 
+  // Vercel: real billed charges where we have them, flat plan price otherwise.
+  const vercelSub: CostData["vercelSub"] = {};
+  for (const r of vercelRows) {
+    if (!cash[r.day]) continue;
+    (vercelSub[r.day] ??= {})[r.label] = r.cost;
+    cash[r.day].Vercel = (cash[r.day].Vercel ?? 0) + r.cost;
+  }
   for (const f of FIXED_COSTS)
-    for (const d of dates) cash[d][f.service] = acc[d][f.service] = f.monthly / daysInMonth(d);
+    for (const d of dates) {
+      if (f.service === "Vercel" && vercelSub[d]) continue; // actual charges win
+      cash[d][f.service] = f.monthly / daysInMonth(d);
+    }
 
   // Cash basis: top-ups on the date they were paid.
   for (const t of ledgerRows) {
@@ -111,42 +146,23 @@ export async function getCostData(collecting: boolean): Promise<CostData> {
     if (cash[t.paidOn]) cash[t.paidOn][svc] = (cash[t.paidOn][svc] ?? 0) + t.amount;
   }
 
-  // Consumed basis: balance drop between consecutive daily snapshots, spread
-  // over the days in between. A balance increase is a detected top-up.
-  const detected: CostData["detected"] = [];
-  const firstSnap: Record<string, string> = {};
-  const latest: Record<string, { balance: number; at: Date }> = {};
-  for (const svc of PREPAID) {
-    const byDay = new Map<string, number>();
-    for (const s of snaps) {
-      if (s.service !== svc) continue;
-      byDay.set(ymd(s.takenAt), s.balance); // last snapshot of the day wins
-      latest[svc] = { balance: s.balance, at: s.takenAt };
-    }
-    const arr = [...byDay];
-    if (arr.length) firstSnap[svc] = arr[0][0];
-    for (let i = 1; i < arr.length; i++) {
-      const drop = arr[i - 1][1] - arr[i][1];
-      if (drop < 0) {
-        detected.push({ service: svc, date: arr[i][0], amount: -drop });
-        continue;
-      }
-      const span: string[] = [];
-      for (let d = addDays(arr[i - 1][0], 1); d <= arr[i][0]; d = addDays(d, 1)) span.push(d);
-      for (const d of span) if (acc[d]) acc[d][svc] = (acc[d][svc] ?? 0) + drop / span.length;
-    }
-  }
+  // Auto-detected top-ups (2captcha / CapSolver): a balance that jumps up
+  // between two consecutive readings means money was added. Counted like a
+  // ledger entry, unless you already entered one for that service within a day
+  // of it (then the manual entry wins, so nothing is counted twice).
+  const { detected, latest } = detectTopups(snaps, ledgerRows);
+  for (const t of detected)
+    if (t.counted && cash[t.date]) cash[t.date][t.service as CostService] = (cash[t.date][t.service as CostService] ?? 0) + t.amount;
 
   const latestAt = Object.values(latest).reduce<Date | null>((m, v) => (!m || v.at > m ? v.at : m), null);
   return {
     today,
     dates,
     cash,
-    acc,
     railwaySub,
+    vercelSub,
     balances: Object.fromEntries(PREPAID.map((s) => [s, latest[s]?.balance ?? null])),
     balancesAt: latestAt?.toISOString() ?? null,
-    firstSnap,
     ledger: ledgerRows.map((t) => ({ id: t.id, service: t.service, date: t.paidOn, amount: t.amount, note: t.note })),
     detected,
     collecting,

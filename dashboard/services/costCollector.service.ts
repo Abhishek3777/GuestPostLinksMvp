@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { costBalanceSnapshots, costRailwayDaily } from "@/lib/schema";
+import { costBalanceSnapshots, costRailwayDaily, costVercelDaily } from "@/lib/schema";
 import { sql } from "drizzle-orm";
 
 // Pulls cost inputs into the DB: priced Railway usage per day per service,
@@ -7,6 +7,8 @@ import { sql } from "drizzle-orm";
 //   RAILWAY_API_TOKEN     — an *account* token (Railway → Account Settings →
 //                           Tokens, "No workspace"), so it can read every workspace
 //   TWO_CAPTCHA_API_KEY, CAPSOLVER_API_KEY
+//   VERCEL_API_TOKEN      — token scoped to the Vercel team (optional VERCEL_TEAM_ID,
+//                           default "acg-digital"); without it Vercel stays a flat $20
 // Anything missing is skipped and reported, never thrown.
 
 const RAILWAY_GQL = "https://backboard.railway.com/graphql/v2";
@@ -98,6 +100,57 @@ async function collectRailway(): Promise<string> {
   return `railway: ${written} rows`;
 }
 
+// ---------- Vercel ----------
+const VERCEL_TEAM = process.env.VERCEL_TEAM_ID ?? "acg-digital";
+const VERCEL_BACKFILL_DAYS = 95;
+const VERCEL_RECENT_DAYS = 4;
+
+// Billing API returns one JSONL row per usage line (tens of thousands a month),
+// so aggregate to day + item as we go and only ask for short windows.
+async function vercelCharges(from: Date, to: Date): Promise<Map<string, number>> {
+  const url = `https://api.vercel.com/v1/billing/charges?teamId=${encodeURIComponent(VERCEL_TEAM)}&from=${from.toISOString()}&to=${to.toISOString()}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.VERCEL_API_TOKEN}` } });
+  if (!res.ok) throw new Error(`Vercel billing API ${res.status}`);
+  const out = new Map<string, number>();
+  for (const line of (await res.text()).split("\n")) {
+    if (!line.trim()) continue;
+    const r = JSON.parse(line) as { BilledCost?: number; ChargePeriodStart: string; ServiceName: string };
+    const cost = Number(r.BilledCost ?? 0);
+    if (!cost) continue;
+    const key = `${r.ChargePeriodStart.slice(0, 10)}|${r.ServiceName}`;
+    out.set(key, (out.get(key) ?? 0) + cost);
+  }
+  return out;
+}
+
+async function collectVercel(): Promise<string> {
+  if (!process.env.VERCEL_API_TOKEN) return "vercel: VERCEL_API_TOKEN not set (using flat $20)";
+  const have = await db.select({ day: costVercelDaily.day }).from(costVercelDaily).limit(1);
+  const days = have.length ? VERCEL_RECENT_DAYS : VERCEL_BACKFILL_DAYS;
+
+  const end = new Date();
+  let written = 0;
+  // 30-day chunks, newest first, so a big backfill never asks for one huge response.
+  for (let covered = 0; covered < days; covered += 30) {
+    const to = new Date(end.getTime() - covered * 86400000);
+    const from = new Date(end.getTime() - Math.min(covered + 30, days) * 86400000);
+    from.setUTCHours(0, 0, 0, 0);
+    const agg = await vercelCharges(from, to);
+    const rows = [...agg].map(([k, cost]) => {
+      const [day, label] = k.split("|");
+      return { day, label, cost };
+    });
+    for (let i = 0; i < rows.length; i += 500) {
+      await db
+        .insert(costVercelDaily)
+        .values(rows.slice(i, i + 500))
+        .onConflictDoUpdate({ target: [costVercelDaily.day, costVercelDaily.label], set: { cost: sql`excluded.cost` } });
+    }
+    written += rows.length;
+  }
+  return `vercel: ${written} rows`;
+}
+
 async function collectBalances(): Promise<string> {
   const rows: { service: string; balance: number }[] = [];
   const notes: string[] = [];
@@ -140,7 +193,7 @@ export function collectCosts(): Promise<string[]> {
   if (running) return running;
   running = (async () => {
     const out: string[] = [];
-    for (const step of [collectBalances, collectRailway]) {
+    for (const step of [collectBalances, collectRailway, collectVercel]) {
       try {
         out.push(await step());
       } catch (e) {
