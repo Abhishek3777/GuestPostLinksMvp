@@ -18,6 +18,16 @@ const client = postgres(connectionString, {
   // Per-domain DB writes are a small, fast fraction of crawl time (dominated
   // by network fetches), so this shouldn't meaningfully affect crawl speed.
   max: 10,
+  // Confirmed live, 2026-10-18: without this, a session-mode connection
+  // (below) never gives its slot back once opened, even when genuinely
+  // unused — unlike transaction mode, which hands the real connection back
+  // the instant a query finishes. Found all 15 of the pooler's total slots
+  // permanently held (worker's 10 + dashboard's 4), every one idle, just
+  // because nothing was closing them — leaving ad-hoc scripts and normal
+  // headroom with nowhere to go. 20s is short enough to free a slot quickly
+  // once it's actually idle, long enough that normal back-to-back crawl
+  // activity never pays a reconnect cost.
+  idle_timeout: 20,
   // Session-mode pooler (port 5432 — see DATABASE_URL), not transaction-mode
   // (6543). This worker is a long-lived process that holds connections open
   // for its whole lifetime, which is exactly what session mode is for: one

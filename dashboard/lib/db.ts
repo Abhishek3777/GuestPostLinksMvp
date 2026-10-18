@@ -30,6 +30,13 @@ const client =
     // the 15 cap even with both maxed out simultaneously — fixes dashboard
     // pages queueing for a connection behind an actively-crawling campaign.
     max: 4,
+    // Confirmed live, 2026-10-18: without this, a session-mode connection
+    // never gives its slot back once opened, even when genuinely unused.
+    // Found all 15 of the pooler's total slots permanently held (worker's
+    // 10 + dashboard's 4), every one idle — see src/db/client.ts for the
+    // matching change there. 20s frees a slot quickly once it's actually
+    // idle without causing reconnects during normal page-to-page use.
+    idle_timeout: 20,
     // This DB is shared with ORR (dev project) — our tables live in their own
     // "guestpost" schema, not "public", so they never collide with ORR's own.
     connection: { search_path: "guestpost" },
