@@ -64,7 +64,7 @@ export function SitesFilters({ counts }: { counts: { all: number; active: number
           value={q}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="Search domains"
-          className="w-64 rounded-lg border border-border bg-surface py-2 pl-9 pr-3 text-sm text-text outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
+          className="w-full rounded-lg border border-border bg-surface py-2 pl-9 sm:w-64 pr-3 text-sm text-text outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
         />
       </div>
     </div>
@@ -154,7 +154,7 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
 
   if (naming) {
     return (
-      <div className="flex w-72 flex-col gap-1.5 rounded-lg border border-border bg-surface p-3">
+      <div className="flex w-full max-w-72 flex-col gap-1.5 rounded-lg border border-border bg-surface p-3">
         <label className="text-xs font-medium text-muted">Campaign name (optional)</label>
         <input
           autoFocus

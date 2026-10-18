@@ -31,6 +31,14 @@ export interface CrawlDomainOptions {
   // lets the loop see its own deadline coming and wrap up gracefully instead,
   // returning what it actually found as a real result.
   deadline?: number;
+  // Lets the caller actually stop this crawl mid-flight (see util.ts's
+  // withTimeout) instead of merely abandoning it to keep running orphaned —
+  // confirmed live, 2026-10-18: a domain with a huge candidate list, once
+  // abandoned without real cancellation, kept fetching every remaining
+  // candidate in the background indefinitely, and piling up two or three
+  // such orphaned crawls at once was what was actually exhausting the heap
+  // and crashing the whole worker, regardless of concurrency settings.
+  signal?: AbortSignal;
 }
 
 // What happened to a post this run, so it can be remembered for next time.
@@ -62,7 +70,12 @@ export interface CrawlDomainResult {
 }
 
 export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Promise<CrawlDomainResult> {
-  const fetcher = opts.fetcher ?? fetchText;
+  const baseFetcher = opts.fetcher ?? fetchText;
+  // Wrapped once, here, so every call this function makes through `fetcher`
+  // — discovery AND every per-post extraction — automatically carries the
+  // cancellation signal, without discovery/extraction needing to know about
+  // it at all.
+  const fetcher: Fetcher = opts.signal ? (url) => baseFetcher(url, opts.signal) : baseFetcher;
   const discovery = await discoverPosts(domain, fetcher);
   if (discovery.status !== "success") {
     return {

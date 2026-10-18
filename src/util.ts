@@ -14,14 +14,27 @@ export class TimeoutError extends Error {}
 // was genuinely stuck). This should have existed from the start for a
 // crawler hitting arbitrary external domains, not added after the fact.
 //
-// The losing side of the race is NOT cancelled (JS can't actually cancel a
-// pending network call) — it keeps running in the background and its result
-// is just discarded, which is fine: it costs that one lingering request, not
-// a permanently blocked worker slot.
-export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+// `controller`, when passed, gets aborted the moment this timeout fires —
+// confirmed live, 2026-10-18: without this, "the losing side just keeps
+// running in the background" was NOT a one-off lingering request as
+// originally assumed here. A domain with a genuinely huge candidate list
+// (thousands of posts) can be mid-loop through hundreds of remaining
+// candidates when the outer timeout gives up on it; every one of those
+// still runs to completion, unbounded, in a process nothing is watching
+// anymore. Pile up two or three abandoned domains like that at once and the
+// combined orphaned work exhausts the heap and crashes the whole worker —
+// reproduced locally, twice, chasing exactly this. Passing a controller
+// lets the caller's fetcher actually stop mid-request instead of running to
+// its own natural end regardless of who's still listening.
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string, controller?: AbortController): Promise<T> {
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new TimeoutError(`${label}: no result within ${ms / 1000}s`)), ms)),
+    new Promise<T>((_, reject) =>
+      setTimeout(() => {
+        controller?.abort();
+        reject(new TimeoutError(`${label}: no result within ${ms / 1000}s`));
+      }, ms)
+    ),
   ]);
 }
 

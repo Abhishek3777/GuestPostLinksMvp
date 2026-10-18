@@ -138,15 +138,18 @@ async function recoverFailures(campaignId: string, campaign: NonNullable<Awaited
               return;
             }
             try {
+              const controller = new AbortController();
               const result = await withTimeout(
                 crawlDomain(domain, {
                   targetPostCount: campaign.targetPostCount,
                   days: campaign.daysWindow ?? undefined,
                   deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
                   skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
+                  signal: controller.signal,
                 }),
                 PER_DOMAIN_TIMEOUT_MS,
-                domain
+                domain,
+                controller
               );
               await dbWriteLimit(() => saveCrawlResult(campaignId, result));
             } catch (err) {
@@ -227,6 +230,13 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
             // One bad domain must never sink the whole campaign: whatever goes
             // wrong here is recorded as THAT domain's result and the rest carry on.
             try {
+              // Real cancellation, not just abandonment — see util.ts's
+              // withTimeout and pipeline.ts's CrawlDomainOptions.signal.
+              // Without this, a domain still mid-loop through a huge
+              // candidate list when PER_DOMAIN_TIMEOUT_MS fires kept running
+              // orphaned in the background indefinitely; piling up a couple
+              // of those at once is what was actually crashing the worker.
+              const controller = new AbortController();
               const result = await withTimeout(
                 withBlockedEscalation(domain, campaignId, {
                   targetPostCount: campaign.targetPostCount,
@@ -241,9 +251,11 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
                   // "error" despite actively succeeding the whole time.
                   deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
                   skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
+                  signal: controller.signal,
                 }),
                 PER_DOMAIN_TIMEOUT_MS,
-                domain
+                domain,
+                controller
               );
               await dbWriteLimit(() => saveCrawlResult(campaignId, result));
             } catch (err) {

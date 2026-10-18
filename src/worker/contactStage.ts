@@ -1,5 +1,6 @@
 import pLimit from "p-limit";
 import { findContact, type ContactResult } from "../contact/findContact.js";
+import { fetchText } from "../httpClient.js";
 import { sleep, withTimeout } from "../util.js";
 import {
   backfillContactEmails,
@@ -68,11 +69,11 @@ const PER_PROSPECT_TIMEOUT_MS = 5 * 60_000;
 // this is the plain-HTTP retry; a real block still only escalates to a browser once,
 // below, never repeated.
 const RETRY_ONCE = new Set<string>(["timeout", "error"]);
-async function lookupWithRetry(domain: string, campaignId: string): Promise<ContactResult> {
-  const first = await findContact(domain);
+async function lookupWithRetry(domain: string, campaignId: string, signal?: AbortSignal): Promise<ContactResult> {
+  const first = await findContact(domain, fetchText, signal);
   if (RETRY_ONCE.has(first.status)) {
     await sleep(4000);
-    const second = await findContact(domain);
+    const second = await findContact(domain, fetchText, signal);
     if (second.status !== "blocked") return second;
   } else if (first.status !== "blocked") {
     return first;
@@ -89,7 +90,7 @@ async function lookupWithRetry(domain: string, campaignId: string): Promise<Cont
     // domains on its own. Only domains still blocked after this reach the
     // paid proxy below.
     const direct = await getDirectBrowserFetcher();
-    const viaDirect = await findContact(domain, direct.fetch);
+    const viaDirect = await findContact(domain, direct.fetch, signal);
     if (viaDirect.status !== "blocked") return viaDirect;
 
     // Over this campaign's proxy budget: stop escalating further domains to
@@ -98,12 +99,12 @@ async function lookupWithRetry(domain: string, campaignId: string): Promise<Cont
     if (await isOverProxyBudget(campaignId)) return viaDirect;
 
     const browser = await getBrowserFetcher();
-    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser));
+    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser), signal);
     if (viaBrowser.status !== "blocked") return viaBrowser;
 
     const capsolver = getCapsolverFetcher();
     if (!capsolver) return viaBrowser;
-    return findContact(domain, (await capsolver).fetch);
+    return findContact(domain, (await capsolver).fetch, signal);
   });
 }
 
@@ -147,10 +148,14 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
           // One bad site must never sink the whole contact stage: whatever goes
           // wrong is recorded as THAT prospect's result and the rest carry on.
           try {
+            // Real cancellation, not just abandonment — see util.ts's
+            // withTimeout and the matching fix in runCampaign.ts.
+            const controller = new AbortController();
             const result = await withTimeout(
-              lookupWithRetry(prospect.rootDomain, campaignId),
+              lookupWithRetry(prospect.rootDomain, campaignId, controller.signal),
               PER_PROSPECT_TIMEOUT_MS,
-              prospect.rootDomain
+              prospect.rootDomain,
+              controller
             );
 
             // Gambling / government-institutional / "is this actually a

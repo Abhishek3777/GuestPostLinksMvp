@@ -33,7 +33,7 @@ export function DncSearch() {
   }
 
   return (
-    <div className="relative w-64">
+    <div className="relative w-full sm:w-64">
       <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
       <input
         value={q}

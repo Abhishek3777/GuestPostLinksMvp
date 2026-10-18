@@ -64,7 +64,11 @@ function looksLikeRealPage(page: { body?: string }): boolean {
 
 export type { Fetcher };
 
-export async function findContact(domain: string, fetcher: Fetcher = fetchText): Promise<ContactResult> {
+export async function findContact(domain: string, baseFetcher: Fetcher = fetchText, signal?: AbortSignal): Promise<ContactResult> {
+  // Wrapped once so every fetch this function makes carries the
+  // cancellation signal automatically — see pipeline.ts's crawlDomain for
+  // the matching pattern and util.ts's withTimeout for why this exists.
+  const fetcher: Fetcher = signal ? (url) => baseFetcher(url, signal) : baseFetcher;
   const bare = await fetcher(`https://${domain}/`);
   let homepage = bare;
   let triedWww = false;

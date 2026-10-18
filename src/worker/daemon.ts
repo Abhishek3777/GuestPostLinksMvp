@@ -4,6 +4,7 @@ import { runCampaignWorker } from "./runCampaign.js";
 import { runContactStage } from "./contactStage.js";
 import { resetFailedContacts, updateContactStageStatus } from "../db/contactResults.js";
 import { closeRescueFetchers } from "../rescueFetchers.js";
+import { startHeartbeat } from "./heartbeat.js";
 import { archiveCampaign, findCampaignsEligibleForArchiving } from "./archiveCampaign.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs several at
@@ -113,6 +114,12 @@ if (recovered.campaigns || recovered.contactStages) {
   );
 }
 console.log(`[worker] started, ${MAX_CONCURRENT_CAMPAIGNS} concurrent slot(s), polling every ${POLL_INTERVAL_MS}ms`);
+try {
+  await startHeartbeat();
+} catch (err) {
+  // Health reporting is best-effort — never block real work on it.
+  console.error("[heartbeat] could not start:", (err as Error).message);
+}
 
 async function workerSlot(slot: number): Promise<never> {
   while (true) {

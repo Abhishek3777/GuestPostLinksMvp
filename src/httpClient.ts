@@ -106,7 +106,12 @@ async function resolvesViaPublicDns(hostname: string): Promise<boolean> {
 // How a page is fetched. The default everywhere is the plain HTTP client
 // (fetchText); a local script can pass a real-browser fetcher instead for
 // sites that challenge plain requests (see contact/browserFetcher.ts).
-export type Fetcher = (url: string) => Promise<FetchResult>;
+// `signal`, when passed, lets a caller (see util.ts's withTimeout) actually
+// stop an in-flight request instead of just abandoning it to run to its own
+// natural end — confirmed live, 2026-10-18: without real cancellation, a
+// timed-out domain's remaining candidate fetches kept running orphaned in
+// the background, which is what was actually crashing the worker.
+export type Fetcher = (url: string, signal?: AbortSignal) => Promise<FetchResult>;
 
 export interface FetchResult {
   ok: boolean;
@@ -205,9 +210,9 @@ function classifyResponse(status: number, body: string, headers: Record<string, 
   return null;
 }
 
-async function gotFetch(client: Got, url: string): Promise<FetchResult> {
+async function gotFetch(client: Got, url: string, signal?: AbortSignal): Promise<FetchResult> {
   try {
-    const res = await client.get(url);
+    const res = await client.get(url, { signal });
     const bad = classifyResponse(res.statusCode, res.body, res.headers as Record<string, unknown>);
     if (bad) {
       return {
@@ -254,7 +259,7 @@ const CURL_ELIGIBLE = new Set([
 ]);
 const META_MARKER = "\n__CURL_META__";
 
-async function curlFetch(url: string): Promise<FetchResult | null> {
+async function curlFetch(url: string, signal?: AbortSignal): Promise<FetchResult | null> {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
@@ -273,6 +278,7 @@ async function curlFetch(url: string): Promise<FetchResult | null> {
         encoding: "utf8",
         windowsHide: true,
         env: process.env,
+        signal, // sends SIGTERM to the curl child process on abort, same effect as cancelling a got request
       }
     );
 
@@ -348,12 +354,14 @@ export function isHostHeavilyRateLimited(host: string): boolean {
 // the host's minimum gap has passed since the last one ended. The gap is
 // measured from when the previous request FINISHED, so a slow response
 // doesn't get the next request fired straight on its heels.
-async function throttled<T>(host: string, work: () => Promise<T>): Promise<T> {
+async function throttled<T>(host: string, work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   const prior = hostQueue.get(host) ?? Promise.resolve();
   const run = prior.then(async () => {
     const gap = hostIntervalMs.get(host) ?? MIN_HOST_INTERVAL_MS;
     const wait = gap - (Date.now() - (lastRequestDoneAt.get(host) ?? 0));
-    if (wait > 0) await sleep(wait);
+    // Don't make an already-abandoned caller sit out the rest of its queue
+    // wait for nothing — same spirit as the real fetch cancellation below.
+    if (wait > 0 && !signal?.aborted) await sleep(wait);
     try {
       return await work();
     } finally {
@@ -431,7 +439,7 @@ function recordOutcome(host: string, result: FetchResult) {
   hostFailureState.set(host, s);
 }
 
-export async function fetchText(url: string): Promise<FetchResult> {
+export async function fetchText(url: string, signal?: AbortSignal): Promise<FetchResult> {
   const host = hostOf(url);
 
   const openReason = circuitOpen(host);
@@ -450,28 +458,28 @@ export async function fetchText(url: string): Promise<FetchResult> {
     };
   }
 
-  const result = await throttled(host, () => fetchTextUnthrottled(url, host));
+  const result = await throttled(host, () => fetchTextUnthrottled(url, host, signal), signal);
   recordOutcome(host, result);
   return result;
 }
 
-async function fetchTextUnthrottled(url: string, host: string): Promise<FetchResult> {
+async function fetchTextUnthrottled(url: string, host: string, signal?: AbortSignal): Promise<FetchResult> {
   if (hostsNeedingProxy.has(host) && httpClientProxied) {
-    const viaProxy = await gotFetch(httpClientProxied, url);
+    const viaProxy = await gotFetch(httpClientProxied, url, signal);
     if (viaProxy.ok) return { ...viaProxy, usedFallback: "proxy" };
   }
 
   if (hostsNeedingCurl.has(host)) {
-    const viaCurl = await curlFetch(url);
+    const viaCurl = await curlFetch(url, signal);
     if (viaCurl?.ok) return { ...viaCurl, usedFallback: "curl" };
   }
 
   const client = () =>
     hostsNeedingInsecureTls.has(host) ? httpClientInsecure : hostsNeedingPublicDns.has(host) ? httpClientPublicDns : httpClient;
-  let result = await gotFetch(client(), url);
+  let result = await gotFetch(client(), url, signal);
 
   if (!result.ok && isCertError(result.failureDetail)) {
-    const retry = await gotFetch(httpClientInsecure, url);
+    const retry = await gotFetch(httpClientInsecure, url, signal);
     if (retry.ok) {
       hostsNeedingInsecureTls.add(host);
       return { ...retry, usedFallback: "insecure-tls" };
@@ -480,7 +488,7 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
   }
 
   if (!result.ok && result.failureDetail === "http_429_rate_limited") {
-    result = await backOffAndRetry(host, result, () => gotFetch(client(), url));
+    result = await backOffAndRetry(host, result, () => gotFetch(client(), url, signal));
   }
 
   if (!result.ok && result.errorReason === "dns_error") {
@@ -498,7 +506,7 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
             : `redirects_to_${failed}_which_does_not_exist (${proof})`,
       };
     }
-    const retry = await gotFetch(httpClientPublicDns, url);
+    const retry = await gotFetch(httpClientPublicDns, url, signal);
     if (retry.ok) hostsNeedingPublicDns.add(host);
     result = retry.ok ? { ...retry, usedFallback: "public-dns" } : retry;
   }
@@ -510,7 +518,7 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
     !result.ok &&
     ((result.errorReason === "blocked" && result.failureDetail && CURL_ELIGIBLE.has(result.failureDetail)) || connectionDropped)
   ) {
-    const viaCurl = await curlFetch(url);
+    const viaCurl = await curlFetch(url, signal);
     if (viaCurl?.ok) {
       hostsNeedingCurl.add(host);
       return { ...viaCurl, usedFallback: "curl" };
@@ -523,7 +531,7 @@ async function fetchTextUnthrottled(url: string, host: string): Promise<FetchRes
   // repeat requests), and never reached at all for a host the free options
   // already handle.
   if (!result.ok && result.errorReason === "blocked" && httpClientProxied) {
-    const viaProxy = await gotFetch(httpClientProxied, url);
+    const viaProxy = await gotFetch(httpClientProxied, url, signal);
     if (viaProxy.ok) {
       hostsNeedingProxy.add(host);
       return { ...viaProxy, usedFallback: "proxy" };

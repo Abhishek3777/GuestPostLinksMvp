@@ -2,6 +2,8 @@ import Link from "next/link";
 import { FolderKanban, ShieldCheck, Loader2, ArrowRight } from "lucide-react";
 import { redirect } from "next/navigation";
 import { getCampaignEtas, listCampaigns } from "@/services/campaigns.service";
+import { getWorkerHealth } from "@/services/workerHealth.service";
+import { WorkerHealthCard } from "@/components/WorkerHealthCard";
 import { CampaignEtaLabel } from "@/components/CampaignEtaLabel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatCard } from "@/components/StatCard";
@@ -18,6 +20,7 @@ export default async function CampaignsPage() {
   const isAdmin = user.role === "admin";
   const campaigns = await listCampaigns(isAdmin ? undefined : user.id);
   const etas = await getCampaignEtas(campaigns);
+  const workerHealth = isAdmin ? await getWorkerHealth().catch(() => null) : null;
 
   const totalProspects = campaigns.reduce((sum, c) => sum + c.keptProspects, 0);
   // A campaign parked by Pause is not "running now".
@@ -29,6 +32,8 @@ export default async function CampaignsPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-text">Campaigns</h1>
         <p className="mt-1 text-sm text-muted">Every crawl run, past and in progress.</p>
       </div>
+
+      {workerHealth && <WorkerHealthCard health={workerHealth} />}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label="Total campaigns" value={campaigns.length} icon={FolderKanban} tone="info" />

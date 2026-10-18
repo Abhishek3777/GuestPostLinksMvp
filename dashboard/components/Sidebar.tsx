@@ -32,7 +32,7 @@ export function Sidebar({ email, role }: { email: string; role: Role }) {
   const nav = role === "admin" ? [...NAV, ...ADMIN_NAV] : NAV;
 
   return (
-    <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-border bg-surface">
+    <aside className="flex h-dvh w-60 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface">
       <Link href="/" className="flex items-center gap-2 px-5 py-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white">
           <Link2 size={16} />

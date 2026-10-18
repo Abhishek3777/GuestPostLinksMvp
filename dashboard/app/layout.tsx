@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell } from "@/components/AppShell";
 import { ThemeProvider } from "@/components/theme-provider";
 import { getCurrentUser } from "@/lib/auth";
 import "./globals.css";
@@ -34,12 +34,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       <body className="flex h-full bg-bg text-text">
         <ThemeProvider>
           {user ? (
-            <>
-              <Sidebar email={user.email || "Signed in"} role={user.role} />
-              <div className="flex-1 overflow-y-auto">
-                <main className="mx-auto w-full max-w-6xl px-8 py-8">{children}</main>
-              </div>
-            </>
+            <AppShell email={user.email || "Signed in"} role={user.role}>
+              {children}
+            </AppShell>
           ) : (
             <div className="flex-1">{children}</div>
           )}
