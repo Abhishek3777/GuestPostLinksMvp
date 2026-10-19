@@ -1,7 +1,14 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowRight, Pause, Play, Radar } from "lucide-react";
-import { listSites, listSiteOwnerCounts, countUnassignedSites, SITES_PAGE_SIZE, type SiteFilter } from "@/services/sites.service";
+import {
+  listSites,
+  listSiteOwnerCounts,
+  listAllMembers,
+  countUnassignedSites,
+  SITES_PAGE_SIZE,
+  type SiteFilter,
+} from "@/services/sites.service";
 import { getCurrentUser } from "@/lib/auth";
 import { StatCard } from "@/components/StatCard";
 import { SitesAddForm } from "@/components/SitesAddForm";
@@ -25,10 +32,11 @@ export default async function SitesPage({
   // already enforced server-side regardless of what's in the URL.
   const ownerId = user.role === "admin" && ownerParam ? ownerParam : undefined;
 
-  const [{ sites, total, pageCount, activeTotal, allTotal, latestCampaignId }, owners, unassignedCount] = await Promise.all([
+  const [{ sites, total, pageCount, activeTotal, allTotal, latestCampaignId }, owners, unassignedCount, members] = await Promise.all([
     listSites({ q: q.trim() || undefined, filter, page, viewer: user, ownerId }),
     user.role === "admin" ? listSiteOwnerCounts() : Promise.resolve([]),
     user.role === "admin" ? countUnassignedSites() : Promise.resolve(0),
+    user.role === "admin" ? listAllMembers() : Promise.resolve([]),
   ]);
   const pausedTotal = allTotal - activeTotal;
 
@@ -99,7 +107,13 @@ export default async function SitesPage({
           </p>
         </div>
       ) : (
-        <SitesTable sites={sites} showOwner={user.role === "admin"} />
+        <SitesTable
+          sites={sites}
+          showOwner={user.role === "admin"}
+          total={total}
+          matchQuery={{ q: q.trim() || undefined, filter, ownerId }}
+          members={user.role === "admin" ? members : undefined}
+        />
       )}
 
       {pageCount > 1 && (

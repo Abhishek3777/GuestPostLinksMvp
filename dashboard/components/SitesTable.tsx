@@ -27,21 +27,65 @@ function formatWhen(d: Date | null): string {
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+export interface SitesMatchQuery {
+  q?: string;
+  filter?: string;
+  ownerId?: string;
+}
+
 // The table plus row checkboxes and a bulk action bar for exactly the rows
 // you've ticked — separate from SitesBulkActions, which acts on everything the
 // current search/filter shows instead of a manual selection.
-export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; showOwner?: boolean }) {
+//
+// Two distinct selection modes, both explicit so neither is ever ambiguous:
+//   - "page": the usual checked-rows set, scoped to this page's `sites` only.
+//   - "all-matching": every site that matches the current search/filter,
+//     not just this page — needed once a list runs past one page (confirmed
+//     live, 2026-10-19: "select all" previously only ever meant "select this
+//     page's 50", with no way to act on a filtered owner's full list at
+//     once). Carries no id list client-side (could be tens of thousands) —
+//     the bulk action is sent with the filter itself, same shape the PATCH
+//     endpoint already accepted for this (q/filter/ownerId), just never had
+//     a UI path to it before.
+// Delete deliberately stays "page" (explicit ids) only — bulk-deleting a
+// filtered set of potentially thousands of monitored sites in one action is
+// a materially more destructive operation than pause/activate, not something
+// to fire off from a filter with no per-row confirmation.
+export function SitesTable({
+  sites,
+  showOwner = false,
+  total,
+  matchQuery,
+  members,
+}: {
+  sites: SiteRow[];
+  showOwner?: boolean;
+  total: number;
+  matchQuery: SitesMatchQuery;
+  // Admin only: every team member, for the "reassign to" picker. Undefined
+  // for a non-admin viewer, which is what hides the control entirely.
+  members?: { id: string; email: string }[];
+}) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState<"on" | "off" | "delete" | null>(null);
+  const [selectAllMatching, setSelectAllMatching] = useState(false);
+  const [busy, setBusy] = useState<"on" | "off" | "delete" | "reassign" | null>(null);
+  const [reassignTarget, setReassignTarget] = useState("");
 
-  const allSelected = sites.length > 0 && sites.every((s) => selected.has(s.id));
+  const pageSelected = sites.length > 0 && sites.every((s) => selected.has(s.id));
+  const moreBeyondThisPage = total > sites.length;
 
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(sites.map((s) => s.id)));
+    if (selectAllMatching) {
+      setSelectAllMatching(false);
+      setSelected(new Set());
+      return;
+    }
+    setSelected(pageSelected ? new Set() : new Set(sites.map((s) => s.id)));
   }
 
   function toggleOne(id: string) {
+    setSelectAllMatching(false);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -50,17 +94,42 @@ export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; sho
     });
   }
 
+  function clearSelection() {
+    setSelected(new Set());
+    setSelectAllMatching(false);
+  }
+
   const ids = useMemo(() => [...selected], [selected]);
+  const selectedCount = selectAllMatching ? total : selected.size;
 
   async function bulkActivate(active: boolean) {
     setBusy(active ? "on" : "off");
     await fetch("/api/sites", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ active, ids }),
+      body: JSON.stringify(selectAllMatching ? { active, ...matchQuery } : { active, ids }),
     });
     setBusy(null);
-    setSelected(new Set());
+    clearSelection();
+    router.refresh();
+  }
+
+  async function bulkReassign(newOwnerId: string) {
+    const target = members?.find((m) => m.id === newOwnerId);
+    if (!target) return;
+    if (!confirm(`Reassign ${selectedCount.toLocaleString()} site${selectedCount === 1 ? "" : "s"} to ${target.email}?`)) {
+      setReassignTarget("");
+      return;
+    }
+    setBusy("reassign");
+    await fetch("/api/sites/reassign", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(selectAllMatching ? { newOwnerId, ...matchQuery } : { newOwnerId, ids }),
+    });
+    setBusy(null);
+    setReassignTarget("");
+    clearSelection();
     router.refresh();
   }
 
@@ -73,15 +142,17 @@ export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; sho
       body: JSON.stringify({ ids }),
     });
     setBusy(null);
-    setSelected(new Set());
+    clearSelection();
     router.refresh();
   }
 
   return (
     <div className="flex flex-col gap-2">
-      {selected.size > 0 && (
+      {selectedCount > 0 && (
         <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
-          <span className="font-medium text-accent">{selected.size} selected</span>
+          <span className="font-medium text-accent">
+            {selectedCount.toLocaleString()} selected{selectAllMatching ? " (every site matching this view)" : ""}
+          </span>
           <div className="flex gap-2">
             <button
               onClick={() => bulkActivate(true)}
@@ -97,14 +168,54 @@ export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; sho
             >
               {busy === "off" ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} Pause
             </button>
+            {members && members.length > 0 && (
+              <select
+                value={reassignTarget}
+                onChange={(e) => {
+                  setReassignTarget(e.target.value);
+                  if (e.target.value) bulkReassign(e.target.value);
+                }}
+                disabled={busy !== null}
+                className="rounded-lg border border-border bg-surface px-2 py-1.5 text-xs font-medium text-text outline-none ring-accent/40 focus:ring-2 disabled:opacity-50"
+              >
+                <option value="">
+                  {busy === "reassign" ? "Reassigning…" : "Reassign to"}
+                </option>
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.email}
+                  </option>
+                ))}
+              </select>
+            )}
+            {/* Delete stays page-only — see the comment above this component
+                for why a filter-wide bulk delete is deliberately not offered. */}
+            {!selectAllMatching && (
+              <button
+                onClick={bulkDelete}
+                disabled={busy !== null}
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger-soft disabled:opacity-50"
+              >
+                {busy === "delete" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Delete
+              </button>
+            )}
             <button
-              onClick={bulkDelete}
+              onClick={clearSelection}
               disabled={busy !== null}
-              className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger-soft disabled:opacity-50"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:text-text disabled:opacity-50"
             >
-              {busy === "delete" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Delete
+              Clear
             </button>
           </div>
+        </div>
+      )}
+
+      {pageSelected && !selectAllMatching && moreBeyondThisPage && (
+        <div className="rounded-lg border border-border bg-surface px-4 py-2 text-sm text-muted">
+          All {sites.length.toLocaleString()} sites on this page are selected.{" "}
+          <button onClick={() => setSelectAllMatching(true)} className="font-medium text-accent hover:underline">
+            Select all {total.toLocaleString()} sites matching this view
+          </button>
         </div>
       )}
 
@@ -113,7 +224,7 @@ export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; sho
           <thead>
             <tr className="border-b border-border bg-surface-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
               <th className="w-10 px-5 py-3">
-                <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
+                <input type="checkbox" checked={pageSelected || selectAllMatching} onChange={toggleAll} aria-label="Select all" />
               </th>
               <th className="px-5 py-3">Active</th>
               <th className="px-5 py-3">Domain</th>
@@ -136,7 +247,8 @@ export function SitesTable({ sites, showOwner = false }: { sites: SiteRow[]; sho
                   <td className="px-5 py-3">
                     <input
                       type="checkbox"
-                      checked={selected.has(s.id)}
+                      checked={selectAllMatching || selected.has(s.id)}
+                      disabled={selectAllMatching}
                       onChange={() => toggleOne(s.id)}
                       aria-label={`Select ${s.domain}`}
                     />

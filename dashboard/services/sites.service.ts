@@ -228,6 +228,48 @@ export async function countUnassignedSites(): Promise<number> {
   return c;
 }
 
+// Every team member, not just ones who already own sites — the "reassign to"
+// target picker needs to offer someone who's just joined and owns nothing
+// yet, which listSiteOwnerCounts (grouped off watchedSites) never would.
+export async function listAllMembers(): Promise<{ id: string; email: string }[]> {
+  return db.select({ id: profiles.id, email: profiles.email }).from(profiles).orderBy(profiles.email);
+}
+
+// Admin-only: move ownership of sites from one member to another — the
+// "someone left, hand their list to someone else" case. Same two scopes as
+// the activate/pause bulk ops: an explicit set of checked ids, or everything
+// the current search/filter/owner view shows (so "reassign ALL of X's
+// sites" is just this with no ids and the owner filter set to X).
+export async function reassignSitesByIds(ids: string[], newOwnerId: string, viewer: CurrentUser) {
+  if (viewer.role !== "admin" || !ids.length) return 0;
+  const updated = await db
+    .update(watchedSites)
+    .set({ createdBy: newOwnerId })
+    .where(inArray(watchedSites.id, ids))
+    .returning({ id: watchedSites.id });
+  return updated.length;
+}
+
+export async function reassignSites(
+  newOwnerId: string,
+  viewer: CurrentUser,
+  opts: { q?: string; filter?: SiteFilter; ownerId?: OwnerFilter } = {}
+) {
+  if (viewer.role !== "admin") return 0;
+  const conditions = [
+    opts.q ? ilike(watchedSites.domain, `%${opts.q}%`) : undefined,
+    opts.filter === "active" ? eq(watchedSites.active, true) : undefined,
+    opts.filter === "paused" ? eq(watchedSites.active, false) : undefined,
+    ownershipCondition(viewer, opts.ownerId),
+  ].filter((c) => c !== undefined);
+  const updated = await db
+    .update(watchedSites)
+    .set({ createdBy: newOwnerId })
+    .where(conditions.length ? and(...conditions) : undefined)
+    .returning({ id: watchedSites.id });
+  return updated.length;
+}
+
 export type RunResult =
   | { ok: true; campaignId: string; siteCount: number; daysWindow: number }
   | { ok: false; error: string; campaignId?: string };
