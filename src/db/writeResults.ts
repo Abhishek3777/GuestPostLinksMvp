@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
-import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts } from "./schema.js";
+import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts, watchedSites } from "./schema.js";
 import type { CrawlDomainResult } from "../pipeline.js";
 
 // How many times a crawl-stage crash auto-retries before being left as a
@@ -186,7 +186,7 @@ export async function saveCrawlResult(campaignId: string, result: CrawlDomainRes
 
   if (result.rows.length === 0) return;
 
-  await db
+  const inserted = await db
     .insert(guestPostLinks)
     .values(
       result.rows.map((r) => ({
@@ -198,5 +198,26 @@ export async function saveCrawlResult(campaignId: string, result: CrawlDomainRes
         postDate: r.postDate ? new Date(r.postDate) : null,
       }))
     )
-    .onConflictDoNothing(); // re-running the same campaign/post/link combo is a no-op, not a duplicate
+    .onConflictDoNothing() // re-running the same campaign/post/link combo is a no-op, not a duplicate
+    .returning({ id: guestPostLinks.id, guestPostUrl: guestPostLinks.guestPostUrl });
+
+  // All-time counters on the monitored-site row, if this domain is one (a
+  // no-op UPDATE otherwise). Uses the actual inserted rows, not
+  // result.rows.length, so a re-run that hits onConflictDoNothing doesn't
+  // double-count. Posts counted as distinct guestPostUrls among just the
+  // rows that were genuinely new this call — a post with 2 links adds 1 to
+  // totalPostsFound and 2 to totalLinksFound. Deliberately not gated on "is
+  // this a monitoring campaign": once a domain is in Sites to monitor,
+  // every campaign that happens to touch it (ad hoc or monitoring) should
+  // count toward its total.
+  if (inserted.length > 0) {
+    const newPosts = new Set(inserted.map((r) => r.guestPostUrl)).size;
+    await db
+      .update(watchedSites)
+      .set({
+        totalLinksFound: sql`${watchedSites.totalLinksFound} + ${inserted.length}`,
+        totalPostsFound: sql`${watchedSites.totalPostsFound} + ${newPosts}`,
+      })
+      .where(eq(watchedSites.domain, result.domain));
+  }
 }

@@ -271,6 +271,21 @@ export const watchedSites = pgTable("watched_sites", {
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   lastCampaignId: uuid("last_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
   createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
+  // Cumulative links ever found for this domain, across every monitor run —
+  // incremented live in writeResults.ts's saveCrawlResult, right where each
+  // run's links actually get inserted. Unlike the per-run guest_post_links
+  // rows (deleted ~1 week after a campaign completes, see ArchivedSummary in
+  // dashboard/lib/schema.ts), this survives archival, so it's the only place
+  // "how many has this domain produced, all time" can be read from once a
+  // campaign is old. Seeded once via a backfill over whatever guest_post_links
+  // rows were still live when this column was added — history older than
+  // that backfill's cutoff is already gone and isn't recoverable.
+  totalLinksFound: integer("total_links_found").notNull().default(0),
+  // Distinct guest-post pages that produced at least one counted link, all
+  // time — a post can carry more than one outbound link (each its own row
+  // in guest_post_links / its own count toward totalLinksFound above), so
+  // this is deliberately a separate, smaller number, not a duplicate of it.
+  totalPostsFound: integer("total_posts_found").notNull().default(0),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------

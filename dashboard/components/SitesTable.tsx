@@ -19,7 +19,14 @@ export interface SiteRow {
   crawlStatus: string | null;
   crawlReason: string | null;
   links: number | null;
+  posts: number | null;
   ownerEmail: string | null;
+  // Cumulative links/posts ever found for this domain, across every run —
+  // unlike `links`/`posts` above (last run only), these don't reset. See the
+  // matching comment on watchedSites.totalLinksFound (lib/schema.ts) for why
+  // "all time" can't go back further than when this shipped.
+  totalLinksFound: number;
+  totalPostsFound: number;
 }
 
 function formatWhen(d: Date | null): string {
@@ -71,6 +78,10 @@ export function SitesTable({
   const [selectAllMatching, setSelectAllMatching] = useState(false);
   const [busy, setBusy] = useState<"on" | "off" | "delete" | "reassign" | null>(null);
   const [reassignTarget, setReassignTarget] = useState("");
+  // Which number the Backlinks column shows — last run only, or the
+  // cumulative all-time counter. Purely a display toggle: both numbers are
+  // already fetched per row, nothing to refetch when this flips.
+  const [backlinksMode, setBacklinksMode] = useState<"last" | "all">("last");
 
   const pageSelected = sites.length > 0 && sites.every((s) => selected.has(s.id));
   const moreBeyondThisPage = total > sites.length;
@@ -231,7 +242,29 @@ export function SitesTable({
               {showOwner && <th className="px-5 py-3">Added by</th>}
               <th className="px-5 py-3">Last run</th>
               <th className="px-5 py-3">Last result</th>
-              <th className="px-5 py-3">Backlinks</th>
+              <th className="px-5 py-3">Guest posts</th>
+              <th className="px-5 py-3">
+                <div className="flex items-center gap-1.5">
+                  <span>Backlinks</span>
+                  <div className="flex rounded-md border border-border bg-bg p-0.5 text-[10px] normal-case tracking-normal">
+                    <button
+                      type="button"
+                      onClick={() => setBacklinksMode("last")}
+                      className={`rounded px-1.5 py-0.5 font-medium transition-colors ${backlinksMode === "last" ? "bg-accent-soft text-accent" : "text-muted hover:text-text"}`}
+                    >
+                      Last run
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBacklinksMode("all")}
+                      className={`rounded px-1.5 py-0.5 font-medium transition-colors ${backlinksMode === "all" ? "bg-accent-soft text-accent" : "text-muted hover:text-text"}`}
+                    >
+                      All time
+                    </button>
+                  </div>
+                  <span className="font-normal normal-case text-muted/70">(applies to both)</span>
+                </div>
+              </th>
               <th className="px-5 py-3"></th>
             </tr>
           </thead>
@@ -278,7 +311,20 @@ export function SitesTable({
                       <span className="text-muted">not reached</span>
                     )}
                   </td>
-                  <td className="px-5 py-3 text-muted">{s.links === null ? "—" : s.links.toLocaleString()}</td>
+                  <td className="px-5 py-3 text-muted">
+                    {backlinksMode === "all"
+                      ? s.totalPostsFound.toLocaleString()
+                      : s.posts === null
+                        ? "—"
+                        : s.posts.toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3 text-muted">
+                    {backlinksMode === "all"
+                      ? s.totalLinksFound.toLocaleString()
+                      : s.links === null
+                        ? "—"
+                        : s.links.toLocaleString()}
+                  </td>
                   <td className="px-5 py-3 text-right">
                     <DeleteSiteButton id={s.id} domain={s.domain} />
                   </td>

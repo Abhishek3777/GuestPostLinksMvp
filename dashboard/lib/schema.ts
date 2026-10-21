@@ -161,6 +161,11 @@ export const watchedSites = pgTable("watched_sites", {
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   lastCampaignId: uuid("last_campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
   createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
+  // Cumulative links ever found for this domain, across every monitor run —
+  // see the matching comment in src/db/schema.ts (worker) for why this
+  // exists separately from the per-run guest_post_links count.
+  totalLinksFound: integer("total_links_found").notNull().default(0),
+  totalPostsFound: integer("total_posts_found").notNull().default(0),
 });
 
 export const guestPostProspects = pgTable(

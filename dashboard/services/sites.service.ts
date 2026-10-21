@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, countDistinct, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaigns, domainCrawlStatus, guestPostLinks, profiles, watchedSites } from "@/lib/schema";
 import { createCampaign } from "./campaigns.service";
@@ -69,6 +69,8 @@ export async function listSites(opts: {
         crawlStatus: domainCrawlStatus.status,
         crawlReason: domainCrawlStatus.reason,
         ownerEmail: profiles.email,
+        totalLinksFound: watchedSites.totalLinksFound,
+        totalPostsFound: watchedSites.totalPostsFound,
       })
       .from(watchedSites)
       .leftJoin(campaigns, eq(campaigns.id, watchedSites.lastCampaignId))
@@ -91,16 +93,23 @@ export async function listSites(opts: {
       .where(scopeOnly),
   ]);
 
-  // Backlinks each listed site produced in its own last run.
+  // Backlinks + distinct guest-post pages each listed site produced in its
+  // own last run (a post with 2 outbound links counts once toward posts,
+  // twice toward links — same distinction as the all-time counters below).
   const campaignIds = [...new Set(rows.map((r) => r.lastCampaignId).filter((id): id is string => Boolean(id)))];
   const linkCounts = campaignIds.length
     ? await db
-        .select({ campaignId: guestPostLinks.campaignId, sourceDomain: guestPostLinks.sourceDomain, links: count() })
+        .select({
+          campaignId: guestPostLinks.campaignId,
+          sourceDomain: guestPostLinks.sourceDomain,
+          links: count(),
+          posts: countDistinct(guestPostLinks.guestPostUrl),
+        })
         .from(guestPostLinks)
         .where(inArray(guestPostLinks.campaignId, campaignIds))
         .groupBy(guestPostLinks.campaignId, guestPostLinks.sourceDomain)
     : [];
-  const linksBySite = new Map(linkCounts.map((l) => [`${l.campaignId}|${l.sourceDomain}`, l.links]));
+  const linksBySite = new Map(linkCounts.map((l) => [`${l.campaignId}|${l.sourceDomain}`, { links: l.links, posts: l.posts }]));
 
   // Most recent run among sites this viewer can see, so the page can link to
   // its results.
@@ -113,10 +122,14 @@ export async function listSites(opts: {
     .limit(1);
 
   return {
-    sites: rows.map((r) => ({
-      ...r,
-      links: r.lastCampaignId ? (linksBySite.get(`${r.lastCampaignId}|${r.domain}`) ?? 0) : null,
-    })),
+    sites: rows.map((r) => {
+      const lastRun = r.lastCampaignId ? linksBySite.get(`${r.lastCampaignId}|${r.domain}`) : undefined;
+      return {
+        ...r,
+        links: r.lastCampaignId ? (lastRun?.links ?? 0) : null,
+        posts: r.lastCampaignId ? (lastRun?.posts ?? 0) : null,
+      };
+    }),
     total,
     page,
     pageCount: Math.max(1, Math.ceil(total / SITES_PAGE_SIZE)),
