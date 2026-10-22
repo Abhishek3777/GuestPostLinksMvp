@@ -10,6 +10,7 @@ import { DedupDaysSetting } from "@/components/DedupDaysSetting";
 
 export const dynamic = "force-dynamic";
 
+
 export default async function TeamPage() {
   const user = await getCurrentUser();
   if (!user || user.role !== "admin") notFound();
@@ -42,9 +43,8 @@ export default async function TeamPage() {
                 <td className="px-5 py-3 font-medium text-text">{m.email}</td>
                 <td className="px-5 py-3">
                   <span
-                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                      m.role === "admin" ? "bg-accent-soft text-accent" : "bg-surface-2 text-muted"
-                    }`}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${m.role === "admin" ? "bg-accent-soft text-accent" : "bg-surface-2 text-muted"
+                      }`}
                   >
                     {m.role}
                   </span>
