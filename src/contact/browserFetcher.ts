@@ -1,5 +1,6 @@
 import type { FetchResult } from "../httpClient.js";
 import { playwrightProxy, sleep } from "../util.js";
+import { isProxyJunk, proxyJunkEnabled } from "./proxyJunk.js";
 
 // A page fetcher that loads the page in a REAL Chromium instead of a plain HTTP
 // request. Some anti-bot walls (SiteGround's "Robot Challenge", Cloudflare's
@@ -47,7 +48,11 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
   } catch {
     throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
   }
-  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy(proxyEnvVar) });
+  const proxy = playwrightProxy(proxyEnvVar);
+  const browser = await chromium.launch({ headless: true, proxy });
+  // Third-party junk is only worth refusing where bytes cost money; the
+  // no-proxy browser keeps loading exactly what it always did.
+  const blockJunk = !!proxy && proxyJunkEnabled();
 
   // Unchanged below this line: the existing challenge-detection/success/
   // failure logic is deliberately left untouched, line for line — only a
@@ -60,6 +65,7 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
     await page.route("**/*", (route) => {
       const type = route.request().resourceType();
       if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
+      if (blockJunk && isProxyJunk(route.request().url(), type)) return route.abort();
       return route.continue();
     });
     page.on("response", (response) => {

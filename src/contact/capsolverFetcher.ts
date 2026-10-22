@@ -1,5 +1,6 @@
 import type { FetchResult } from "../httpClient.js";
 import { playwrightProxy, sleep } from "../util.js";
+import { isProxyJunk, proxyJunkEnabled } from "./proxyJunk.js";
 
 // Same real-browser approach as browserFetcher.ts, plus one extra step: if the
 // page presents an actual Cloudflare Turnstile widget (not just a "wait for the
@@ -16,9 +17,10 @@ const CHALLENGE_MARKERS =
   /sgcaptcha|just a moment|checking your browser|verify(ing)? (that )?you are (a )?human|enable javascript and cookies|attention required|one moment, please|robot challenge/i;
 const MIN_REAL_PAGE_TEXT = 400;
 const CAPSOLVER_API = "https://api.capsolver.com";
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 export interface CapsolverFetcher {
-  fetch: (url: string) => Promise<FetchResult>;
+  fetch: (url: string) => Promise<FetchResult & { bytesTransferred: number }>;
   close: () => Promise<void>;
 }
 
@@ -67,12 +69,36 @@ export async function createCapsolverFetcher(apiKey: string, proxyEnvVar = "PROX
   // CapSolver's own solve step is "proxyless" (it solves the challenge
   // server-side, not through this proxy) — this only affects which IP the
   // page itself is loaded from.
-  const browser = await chromium.launch({ headless: true, proxy: playwrightProxy(proxyEnvVar) });
+  const proxy = playwrightProxy(proxyEnvVar);
+  const browser = await chromium.launch({ headless: true, proxy });
+  const blockJunk = !!proxy && proxyJunkEnabled();
 
-  async function fetchPage(url: string): Promise<FetchResult> {
+  async function fetchPage(url: string): Promise<FetchResult & { bytesTransferred: number }> {
+    const bytesRef = { value: 0 };
+    const result = await fetchPageInner(url, bytesRef);
+    return { ...result, bytesTransferred: bytesRef.value };
+  }
+
+  async function fetchPageInner(url: string, bytesRef: { value: number }): Promise<FetchResult> {
     await sleep(1000);
     const context = await browser.newContext({ userAgent: USER_AGENT, locale: "en-US", viewport: { width: 1366, height: 768 } });
     const page = await context.newPage();
+    // Same byte counting as browserFetcher.ts: this browser goes through the
+    // same paid proxy, and before this it was invisible to the per-campaign cap.
+    // Images/fonts/media are pure bandwidth here (only text and the Turnstile
+    // sitekey are read) — same set browserFetcher.ts has always aborted.
+    if (blockJunk) {
+      await page.route("**/*", (route) => {
+        const type = route.request().resourceType();
+        return BLOCKED_RESOURCE_TYPES.has(type) || isProxyJunk(route.request().url(), type) ? route.abort() : route.continue();
+      });
+    }
+    page.on("response", (response) => {
+      response
+        .body()
+        .then((b) => (bytesRef.value += b.length))
+        .catch(() => undefined);
+    });
     try {
       const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await page.waitForTimeout(3000);

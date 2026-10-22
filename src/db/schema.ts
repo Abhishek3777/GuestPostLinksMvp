@@ -400,6 +400,38 @@ export const domainContactLedger = pgTable("domain_contact_ledger", {
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------
+ * Rescue tier ledger. When the plain HTTP client reports a domain "blocked",
+ * the worker escalates through up to three tiers: a free direct browser, the
+ * PAID residential-proxy browser, then CapSolver. One row per tier actually
+ * tried per domain per stage, so "of the times the paid proxy was used, how
+ * often did it recover the domain, and at what bandwidth" is a GROUP BY rather
+ * than a guess. `proxy_skipped_budget` rows mark domains the per-campaign cap
+ * stopped short of the proxy — the number to look at before changing that cap.
+ * ------------------------------------------------------------------------- */
+
+export const rescueAttempts = pgTable("rescue_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  campaignId: uuid("campaign_id").references(() => campaigns.id, { onDelete: "cascade" }).notNull(),
+  domain: text("domain").notNull(),
+  // "crawl" = Stage 1 post discovery, "contact" = Stage 3 contact lookup.
+  stage: text("stage").notNull(),
+  // direct_browser | proxy_browser | capsolver | proxy_skipped_budget
+  tier: text("tier").notNull(),
+  // Not "blocked" any more after this tier. Says the wall was passed, not that
+  // the domain then produced a result — see resultStatus for that.
+  recovered: boolean("recovered").notNull(),
+  // The tier's own outcome: discoveryStatus for crawl, contact status for contact.
+  resultStatus: text("result_status").notNull(),
+  // Bytes the tier's browser pulled (response bodies; DataImpulse's own meter
+  // runs a few percent higher with TLS/headers). 0 for skipped rows.
+  bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("rescue_attempts_campaign_idx").on(t.campaignId),
+  index("rescue_attempts_created_idx").on(t.createdAt),
+]).enableRLS();
+
+/* ---------------------------------------------------------------------------
  * Cost dashboard (admin /costs page). Three small tables:
  *  - cost_ledger: manual top-ups for prepaid services (2captcha, CapSolver,
  *    DataImpulse) — their APIs only expose a balance, not payment history.

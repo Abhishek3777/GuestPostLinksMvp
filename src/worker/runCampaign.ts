@@ -11,6 +11,7 @@ import {
   getCapsolverFetcher,
   withProxyBudgetTracking,
 } from "../rescueFetchers.js";
+import { countBytes, recordRescueAttempt } from "../rescueStats.js";
 import { withTimeout } from "../util.js";
 
 // Hard ceiling on one domain's total crawl time, regardless of how many
@@ -57,21 +58,31 @@ async function withBlockedEscalation(domain: string, campaignId: string, opts: C
     // domains on its own. Only domains still blocked after this reach the
     // paid proxy below.
     const direct = await getDirectBrowserFetcher();
-    const viaDirect = await crawlDomain(domain, { ...opts, fetcher: direct.fetch });
+    const directCount = countBytes(direct.fetch);
+    const viaDirect = await crawlDomain(domain, { ...opts, fetcher: directCount.fetch });
+    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "direct_browser", resultStatus: viaDirect.discoveryStatus, bytes: directCount.bytes() });
     if (viaDirect.discoveryStatus !== "blocked") return viaDirect;
 
     // Over this campaign's proxy budget: stop escalating further domains to
     // the paid proxy tier (CapSolver, below, is unaffected — a different,
     // separately-bounded cost).
-    if (await isOverProxyBudget(campaignId)) return viaDirect;
+    if (await isOverProxyBudget(campaignId)) {
+      recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "proxy_skipped_budget", resultStatus: viaDirect.discoveryStatus });
+      return viaDirect;
+    }
 
     const browser = await getBrowserFetcher();
-    const viaBrowser = await crawlDomain(domain, { ...opts, fetcher: withProxyBudgetTracking(campaignId, browser) });
+    let proxyBytes = 0;
+    const viaBrowser = await crawlDomain(domain, { ...opts, fetcher: withProxyBudgetTracking(campaignId, browser, (n) => (proxyBytes += n)) });
+    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "proxy_browser", resultStatus: viaBrowser.discoveryStatus, bytes: proxyBytes });
     if (viaBrowser.discoveryStatus !== "blocked") return viaBrowser;
 
     const capsolver = getCapsolverFetcher();
     if (!capsolver) return viaBrowser;
-    return crawlDomain(domain, { ...opts, fetcher: (await capsolver).fetch });
+    let capBytes = 0;
+    const viaCapsolver = await crawlDomain(domain, { ...opts, fetcher: withProxyBudgetTracking(campaignId, await capsolver, (n) => (capBytes += n)) });
+    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "capsolver", resultStatus: viaCapsolver.discoveryStatus, bytes: capBytes });
+    return viaCapsolver;
   });
 }
 

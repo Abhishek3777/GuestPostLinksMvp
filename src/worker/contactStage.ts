@@ -23,6 +23,7 @@ import {
   withProxyBudgetTracking,
 } from "../rescueFetchers.js";
 import { isOverProxyBudget } from "../db/writeResults.js";
+import { countBytes, recordRescueAttempt } from "../rescueStats.js";
 
 // The "is this actually a business" AI check (src/filter/businessRelevance.ts)
 // is deliberately NOT called here anymore (2026-10-14, team decision) — too
@@ -90,21 +91,31 @@ async function lookupWithRetry(domain: string, campaignId: string, signal?: Abor
     // domains on its own. Only domains still blocked after this reach the
     // paid proxy below.
     const direct = await getDirectBrowserFetcher();
-    const viaDirect = await findContact(domain, direct.fetch, signal);
+    const directCount = countBytes(direct.fetch);
+    const viaDirect = await findContact(domain, directCount.fetch, signal);
+    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "direct_browser", resultStatus: viaDirect.status, bytes: directCount.bytes() });
     if (viaDirect.status !== "blocked") return viaDirect;
 
     // Over this campaign's proxy budget: stop escalating further domains to
     // the paid proxy tier (CapSolver, below, is unaffected — a different,
     // separately-bounded cost).
-    if (await isOverProxyBudget(campaignId)) return viaDirect;
+    if (await isOverProxyBudget(campaignId)) {
+      recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "proxy_skipped_budget", resultStatus: viaDirect.status });
+      return viaDirect;
+    }
 
     const browser = await getBrowserFetcher();
-    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser), signal);
+    let proxyBytes = 0;
+    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser, (n) => (proxyBytes += n)), signal);
+    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "proxy_browser", resultStatus: viaBrowser.status, bytes: proxyBytes });
     if (viaBrowser.status !== "blocked") return viaBrowser;
 
     const capsolver = getCapsolverFetcher();
     if (!capsolver) return viaBrowser;
-    return findContact(domain, (await capsolver).fetch, signal);
+    let capBytes = 0;
+    const viaCapsolver = await findContact(domain, withProxyBudgetTracking(campaignId, await capsolver, (n) => (capBytes += n)), signal);
+    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "capsolver", resultStatus: viaCapsolver.status, bytes: capBytes });
+    return viaCapsolver;
   });
 }
 

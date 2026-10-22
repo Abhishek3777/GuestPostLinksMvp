@@ -2,7 +2,7 @@ import pLimit from "p-limit";
 import { createBrowserFetcher, type BrowserFetcher } from "./contact/browserFetcher.js";
 import { createCapsolverFetcher, type CapsolverFetcher } from "./contact/capsolverFetcher.js";
 import { addProxyBytesUsed } from "./db/writeResults.js";
-import type { Fetcher } from "./httpClient.js";
+import type { Fetcher, FetchResult } from "./httpClient.js";
 
 // Shared across the whole worker process, not one per domain: a browser is
 // heavy to start, so it's launched once (lazily, on first block) and reused
@@ -62,9 +62,16 @@ export function getCapsolverFetcher(): Promise<CapsolverFetcher> | null {
 // browserFetcher.ts/pipeline.ts themselves. A failed write is logged and
 // swallowed, never allowed to fail the actual crawl/lookup over a budget
 // bookkeeping hiccup.
-export function withProxyBudgetTracking(campaignId: string, browser: BrowserFetcher): Fetcher {
+export function withProxyBudgetTracking(
+  campaignId: string,
+  browser: { fetch: (url: string) => Promise<FetchResult & { bytesTransferred: number }> },
+  // Also hands the same per-page byte count to the caller, so the rescue-stats
+  // row for this domain carries the bandwidth THIS domain cost.
+  onBytes?: (bytes: number) => void,
+): Fetcher {
   return async (url: string) => {
     const result = await browser.fetch(url);
+    onBytes?.(result.bytesTransferred);
     addProxyBytesUsed(campaignId, result.bytesTransferred).catch((err) =>
       console.error(`[proxy-budget] failed to record ${result.bytesTransferred} byte(s) for campaign ${campaignId}:`, err)
     );
