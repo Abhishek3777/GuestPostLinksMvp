@@ -350,3 +350,45 @@ export async function runActiveSites(
 
   return { ok: true, campaignId, siteCount: active.length, daysWindow };
 }
+
+// Same as runActiveSites, but scoped to the admin-curated "priority sites"
+// list (isPriority = true) instead of the active flag — a deliberate,
+// explicit "run exactly these" action, so it ignores active/paused: a
+// priority site worth watching closely should run even if paused.
+export async function runPrioritySites(
+  viewer: CurrentUser,
+  name?: string,
+  overrides: { targetPostCount?: number; daysWindow?: number } = {}
+): Promise<RunResult> {
+  const scope = [eq(watchedSites.isPriority, true), ownershipCondition(viewer, undefined)].filter((c) => c !== undefined);
+  const sites = await db
+    .select({ id: watchedSites.id, domain: watchedSites.domain, lastRunAt: watchedSites.lastRunAt })
+    .from(watchedSites)
+    .where(and(...scope));
+  if (!sites.length) return { ok: false, error: "No priority sites marked yet." };
+
+  const now = Date.now();
+  let daysWindow: number;
+  if (overrides.daysWindow) {
+    daysWindow = overrides.daysWindow;
+  } else {
+    const windows = sites.map((s) => (s.lastRunAt ? Math.ceil((now - s.lastRunAt.getTime()) / 86_400_000) + 1 : FIRST_RUN_DAYS));
+    daysWindow = Math.min(MAX_WINDOW_DAYS, windows.reduce((widest, w) => Math.max(widest, w), 2));
+  }
+
+  const trimmedName = name?.trim();
+  const campaignId = await createCampaign({
+    name: trimmedName || `Priority sites run — ${new Date(now).toISOString().slice(0, 16).replace("T", " ")}`,
+    mode: "discovery",
+    autoContact: true,
+    incremental: true,
+    daysWindow,
+    targetPostCount: overrides.targetPostCount || MONITOR_TARGET_POSTS,
+    domains: sites.map((s) => s.domain),
+    createdBy: viewer.id,
+  });
+
+  await db.update(watchedSites).set({ lastRunAt: new Date(now), lastCampaignId: campaignId }).where(and(...scope));
+
+  return { ok: true, campaignId, siteCount: sites.length, daysWindow };
+}

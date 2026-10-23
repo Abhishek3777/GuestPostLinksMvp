@@ -1,7 +1,19 @@
 import { LogOut } from "lucide-react";
 import type { Role } from "@/lib/auth";
 
-export function UserMenu({ email, role }: { email: string; role: Role }) {
+export function UserMenu({ email, role, collapsed = false }: { email: string; role: Role; collapsed?: boolean }) {
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center gap-3.5 border-t border-border px-3 py-3">
+        <form action="/api/auth/signout" method="post">
+          <button type="submit" title={`Log out (${email})`} className="flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-danger">
+            <LogOut size={13} />
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="border-t border-border px-5 py-3">
       <span

@@ -166,6 +166,10 @@ export const watchedSites = pgTable("watched_sites", {
   // exists separately from the per-run guest_post_links count.
   totalLinksFound: integer("total_links_found").notNull().default(0),
   totalPostsFound: integer("total_posts_found").notNull().default(0),
+  // Admin-curated "we specifically care about this one" flag, independent of
+  // how it ranks on the leaderboard — a site can be worth watching closely
+  // even with 0 backlinks so far (e.g. while chasing a known crawl issue).
+  isPriority: boolean("is_priority").notNull().default(false),
 });
 
 export const guestPostProspects = pgTable(

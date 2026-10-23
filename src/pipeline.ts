@@ -1,5 +1,7 @@
 import { fetchText, isHostHeavilyRateLimited, type Fetcher } from "./httpClient.js";
 import { discoverPosts } from "./discovery/index.js";
+import { tryFetchFeed } from "./discovery/feed.js";
+import { loadRobots } from "./robots.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
 import { extractLinksFromPost } from "./extraction/index.js";
 import { dateFromUrlPath } from "./extraction/articleSignal.js";
@@ -76,7 +78,34 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   // cancellation signal, without discovery/extraction needing to know about
   // it at all.
   const fetcher: Fetcher = opts.signal ? (url) => baseFetcher(url, opts.signal) : baseFetcher;
-  const discovery = await discoverPosts(domain, fetcher);
+  const discovery = await discoverPosts(domain, fetcher, opts.days);
+
+  // Sitemap entries carry no date (real dates only get read once a page is
+  // actually fetched, further down), and a sitemap's own URL order is just
+  // "however the CMS generated it" — not a recency guarantee the way a feed
+  // is. Confirmed live, 2026-10-23: 6 of 20 real priority-site domains had
+  // sitemap "win" (returned SOME candidates) while every one of them turned
+  // out too old once actually checked — meanwhile each site's own RSS feed
+  // had today's real posts sitting right there, untried, because sitemap had
+  // already "succeeded" and nothing else was ever attempted. The same gap
+  // applies even when sitemap finds a FEW genuinely new posts: a feed with
+  // ten new posts shouldn't lose to a sitemap that got lucky with one. Fix:
+  // whenever sitemap is what answered, also pull the feed (one cheap request)
+  // and merge in anything it has that the sitemap pile didn't already cover
+  // — the normal date-window ranking/attempt loop below then treats the
+  // combined pool exactly as it would either source alone. wp-api and feed
+  // are NOT given this treatment: both are genuinely recency-ordered by the
+  // site itself, so succeeding there is real evidence of completeness in a
+  // way a sitemap success alone is not.
+  if (discovery.status === "success" && discovery.source === "sitemap") {
+    const robots = await loadRobots(domain);
+    const feedPosts = await tryFetchFeed(domain, robots, fetcher);
+    if (feedPosts?.length) {
+      const seen = new Set(discovery.posts.map((p) => p.url));
+      for (const p of feedPosts) if (!seen.has(p.url)) discovery.posts.push(p);
+    }
+  }
+
   if (discovery.status !== "success") {
     return {
       domain,

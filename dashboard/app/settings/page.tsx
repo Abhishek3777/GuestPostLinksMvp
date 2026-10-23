@@ -3,29 +3,37 @@ import { Users } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
 import { listTeam } from "@/services/team.service";
 import { getDedupDays } from "@/services/settings.service";
+import { getCostData } from "@/services/costs.service";
+import { isCollecting } from "@/services/costCollector.service";
 import { DedupDaysSetting } from "@/components/DedupDaysSetting";
-// Invite form is off for now — internal tool, accounts are seeded directly
-// (dashboard/scripts/bootstrap-admin.mjs). Re-add when invites come back:
-// import { InviteForm } from "@/components/InviteForm";
+import { CostDashboard } from "@/components/CostDashboard";
+import { SettingsTabSwitcher } from "@/components/SettingsTabSwitcher";
 
 export const dynamic = "force-dynamic";
 
-
-export default async function TeamPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const user = await getCurrentUser();
   if (!user || user.role !== "admin") notFound();
 
-  const [team, dedupDays] = await Promise.all([listTeam(), getDedupDays()]);
+  const { tab: tabParam } = await searchParams;
+  const tab = tabParam === "costs" ? "costs" : "team";
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-text">Team</h1>
-        <p className="mt-1 text-sm text-muted">
-          Admins see every campaign. Members only see the campaigns they started.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight text-text">Settings</h1>
+        <SettingsTabSwitcher selected={tab} />
       </div>
 
+      {tab === "costs" ? <CostsTab /> : <TeamTab />}
+    </div>
+  );
+}
+
+async function TeamTab() {
+  const [team, dedupDays] = await Promise.all([listTeam(), getDedupDays()]);
+  return (
+    <div className="flex flex-col gap-6">
       <DedupDaysSetting dedupDays={dedupDays} />
 
       <div className="overflow-hidden rounded-xl border border-border bg-surface">
@@ -67,4 +75,9 @@ export default async function TeamPage() {
       </div>
     </div>
   );
+}
+
+async function CostsTab() {
+  const data = await getCostData(isCollecting());
+  return <CostDashboard data={data} />;
 }

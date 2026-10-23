@@ -118,7 +118,18 @@ function defaultRunName() {
   return `Monitor run — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
 }
 
-export function RunSitesButton({ activeCount }: { activeCount: number }) {
+export function RunSitesButton({
+  activeCount,
+  endpoint = "/api/sites/run",
+  label = "Run active sites",
+}: {
+  activeCount: number;
+  // Lets Analytics's "Run priority sites" button reuse this exact component
+  // (naming form, post-count/day-window overrides, same campaign flow)
+  // instead of a parallel copy — only the endpoint and label differ.
+  endpoint?: string;
+  label?: string;
+}) {
   const router = useRouter();
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
@@ -132,7 +143,7 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
   async function start() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/sites/run", {
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -227,7 +238,7 @@ export function RunSitesButton({ activeCount }: { activeCount: number }) {
         className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         <Rocket size={15} />
-        Run active sites ({activeCount.toLocaleString()})
+        {label} ({activeCount.toLocaleString()})
       </button>
       {error && <span className="max-w-xs text-right text-xs text-danger">{error}</span>}
     </div>

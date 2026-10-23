@@ -286,6 +286,9 @@ export const watchedSites = pgTable("watched_sites", {
   // in guest_post_links / its own count toward totalLinksFound above), so
   // this is deliberately a separate, smaller number, not a duplicate of it.
   totalPostsFound: integer("total_posts_found").notNull().default(0),
+  // Dashboard-managed admin flag ("watch this one closely") — mirrored here
+  // only for schema consistency, the worker never reads or writes it.
+  isPriority: boolean("is_priority").notNull().default(false),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------

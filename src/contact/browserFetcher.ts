@@ -115,9 +115,76 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
     }
   }
 
+  // XML files (sitemaps above all) need a different path entirely from
+  // fetchPageInner above — confirmed live, 2026-10-22: atoallinks.com's
+  // sitemap was unreachable by plain HTTP (silent timeout, every attempt,
+  // even after changing IP — a connection/TLS-fingerprint block, not a rate
+  // limit), AND a real browser navigating straight to the .xml URL doesn't
+  // work either, for two separate reasons: (1) fetchPageInner's own
+  // challenge-detection reads document.body.innerText, which is near-empty
+  // for an XML document and false-positives as "blocked"; (2) a real
+  // navigation triggers the browser's own XSLT auto-render (this sitemap
+  // ships an <?xml-stylesheet?> pointing at a Yoast stylesheet), turning the
+  // machine-readable XML into a human-readable HTML table our parser can't
+  // use. Fix: load the domain's actual homepage first (a normal navigation —
+  // same origin, passes any JS challenge, and naturally follows a non-www to
+  // www redirect so the sitemap request below lands on whatever origin the
+  // site actually resolves to), then fetch the real target URL from INSIDE
+  // that page's own JS via fetch() — same-origin, so no CORS issue, and a
+  // script-initiated fetch() never applies the stylesheet the way a
+  // top-level navigation does. Confirmed to return the real raw XML this way.
+  async function fetchRawInner(url: string, bytesRef: { value: number }): Promise<FetchResult> {
+    await sleep(1000);
+    const context = await browser.newContext({ userAgent: USER_AGENT, locale: "en-US" });
+    const page = await context.newPage();
+    await page.route("**/*", (route) => {
+      const type = route.request().resourceType();
+      if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
+      if (blockJunk && isProxyJunk(route.request().url(), type)) return route.abort();
+      return route.continue();
+    });
+    page.on("response", (response) => {
+      response
+        .body()
+        .then((b) => (bytesRef.value += b.length))
+        .catch(() => undefined);
+    });
+    try {
+      const target = new URL(url);
+      await page.goto(`${target.protocol}//${target.host}/`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForTimeout(2000); // let a JS challenge on the homepage resolve, same as fetchPageInner
+      // Resolve against wherever the homepage actually ended up (handles a
+      // non-www -> www redirect), keeping the original path/query.
+      const resolvedUrl = new URL(target.pathname + target.search, page.url()).toString();
+      const result = await page.evaluate(async (u: string) => {
+        try {
+          const res = await fetch(u);
+          return { status: res.status, text: await res.text() };
+        } catch (err) {
+          return { status: 0, text: "", error: err instanceof Error ? err.message : String(err) };
+        }
+      }, resolvedUrl);
+
+      if (result.status === 0 || !result.text) {
+        return { ok: false, errorReason: "error", failureDetail: `browser_raw_fetch: ${"error" in result ? result.error : "empty response"}` };
+      }
+      if (result.status >= 400) {
+        return { ok: false, errorReason: result.status === 403 || result.status === 429 ? "blocked" : "error", failureDetail: `http_${result.status}`, status: result.status };
+      }
+      return { ok: true, status: result.status, body: result.text, url: resolvedUrl };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, errorReason: /timeout/i.test(message) ? "timeout" : "error", failureDetail: `browser: ${message.split("\n")[0]!.slice(0, 80)}` };
+    } finally {
+      await context.close();
+    }
+  }
+
+  const XML_URL = /\.xml(\?|$)/i;
+
   async function fetchPage(url: string): Promise<FetchResult & { bytesTransferred: number }> {
     const bytesRef = { value: 0 };
-    const result = await fetchPageInner(url, bytesRef);
+    const result = await (XML_URL.test(url) ? fetchRawInner(url, bytesRef) : fetchPageInner(url, bytesRef));
     return { ...result, bytesTransferred: bytesRef.value };
   }
 
