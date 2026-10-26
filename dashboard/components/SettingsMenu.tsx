@@ -9,6 +9,13 @@ export function SettingsMenu() {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
+  // The menu itself is rendered through a portal straight into document.body
+  // (see below), outside the sidebar's DOM subtree — so it needs its own ref
+  // here too. Without it, a click landing on "Team"/"Costs" isn't recognized
+  // as "inside" by the outside-click check further down, closing/unmounting
+  // the menu before the Link's own click can complete navigation. Confirmed
+  // live, 2026-10-26: this is why Team/Costs appeared to do nothing on click.
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Rendered via a portal into document.body, positioned with `fixed` from
   // the button's real screen position — the sidebar has overflow-y-auto,
@@ -32,7 +39,10 @@ export function SettingsMenu() {
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
-      if (btnRef.current && !btnRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      const insideButton = btnRef.current?.contains(target);
+      const insideMenu = menuRef.current?.contains(target);
+      if (!insideButton && !insideMenu) setOpen(false);
     }
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
@@ -53,6 +63,7 @@ export function SettingsMenu() {
         typeof document !== "undefined" &&
         createPortal(
           <div
+            ref={menuRef}
             style={{ top: pos.top, left: pos.left }}
             className="fixed z-50 w-40 overflow-hidden rounded-lg border border-border bg-surface py-1 shadow-lg"
           >
