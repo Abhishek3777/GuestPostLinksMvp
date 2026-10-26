@@ -135,6 +135,7 @@ export const guestPostLinks = pgTable(
   (t) => [
     uniqueIndex("guest_post_links_unique_idx").on(t.campaignId, t.guestPostUrl, t.externalLink),
     index("guest_post_links_root_domain_idx").on(t.rootDomain),
+    index("guest_post_links_campaign_root_domain_idx").on(t.campaignId, t.rootDomain),
   ]
 );
 

@@ -24,6 +24,152 @@ export async function getCampaignOwnerEmail(createdBy: string | null) {
   return row?.email ?? null;
 }
 
+type CountMaps = { domainMap: Map<string, number>; statusMap: Map<string, number>; linkMap: Map<string, number>; keptMap: Map<string, number> };
+
+function emptyCountMaps(): CountMaps {
+  return { domainMap: new Map(), statusMap: new Map(), linkMap: new Map(), keptMap: new Map() };
+}
+
+// Same "kind" + UNION ALL shape the old single query used — just now callable
+// with either the active-campaign set (always fresh) or the inactive set
+// (cached, see below).
+async function queryCampaignCounts(campaignIds: string[]): Promise<CountMaps> {
+  const maps = emptyCountMaps();
+  if (campaignIds.length === 0) return maps;
+  const idList = sql.join(campaignIds.map((id) => sql`${id}`), sql`, `);
+  const counts = await db.execute<{ kind: "domains" | "statuses" | "links" | "kept"; campaign_id: string; n: number }>(sql`
+    select 'domains' as kind, ${campaignDomains.campaignId} as campaign_id, count(*)::int as n
+      from ${campaignDomains} where ${campaignDomains.campaignId} in (${idList}) group by ${campaignDomains.campaignId}
+    union all
+    select 'statuses', ${domainCrawlStatus.campaignId}, count(*)::int
+      from ${domainCrawlStatus} where ${domainCrawlStatus.campaignId} in (${idList}) group by ${domainCrawlStatus.campaignId}
+    union all
+    select 'links', ${guestPostLinks.campaignId}, count(*)::int
+      from ${guestPostLinks} where ${guestPostLinks.campaignId} in (${idList}) group by ${guestPostLinks.campaignId}
+    union all
+    select 'kept', ${guestPostProspects.campaignId}, count(*)::int
+      from ${guestPostProspects}
+      where ${guestPostProspects.exclusionReason} is null and ${guestPostProspects.campaignId} in (${idList})
+      group by ${guestPostProspects.campaignId}
+  `);
+  const mapByKind = { domains: maps.domainMap, statuses: maps.statusMap, links: maps.linkMap, kept: maps.keptMap } as const;
+  for (const row of counts) {
+    mapByKind[row.kind].set(row.campaign_id, row.n);
+  }
+  return maps;
+}
+
+// A campaign actively doing work right now, by the SAME compound check
+// getCampaignEtas already uses — not just `status`, since a campaign can show
+// status "completed" (crawl done) while contactStageStatus is still "running"
+// (confirmed real shape, seen repeatedly: Priya's and Deepika's campaigns both
+// had this split). Only this small set (at most one — the worker only ever
+// runs one job at a time) gets queried fresh on every call; everything else
+// is cache-eligible below.
+function isCampaignActive(c: { status: string; contactStageStatus: string }): boolean {
+  return c.status === "queued" || c.status === "running" || c.contactStageStatus === "queued" || c.contactStageStatus === "running";
+}
+
+// Cheap, indexed, 2-column lookup — used by the per-campaign detail caches
+// below, which (unlike listCampaigns) don't already have the campaign row in
+// hand when they're called. Not itself cached: it's trivial next to the
+// aggregate queries it's gating, and it needs to reflect the CURRENT status
+// every time — that's what makes a just-clicked Retry/Resume take effect on
+// the very next load, with no separate cache-invalidation step.
+async function isCampaignIdActive(id: string): Promise<boolean> {
+  const [row] = await db.select({ status: campaigns.status, contactStageStatus: campaigns.contactStageStatus }).from(campaigns).where(eq(campaigns.id, id));
+  return row ? isCampaignActive(row) : false;
+}
+
+// Same stale-while-revalidate idea as the list page's inactive-campaign
+// cache, generalized per-campaign-id and given a much longer TTL: once a
+// campaign is inactive (completed/failed, or paused — see isCampaignActive),
+// its detail data is provably frozen, not just "safe to serve a bit stale."
+// It can only start changing again via an action (Retry/Resume) that flips
+// its status, which isCampaignIdActive picks up on the very next call — so
+// there's no real downside to a long TTL here, only fewer repeated queries
+// against data that was never going to change anyway.
+const DETAIL_CACHE_MS = 5 * 60_000;
+
+function createDetailCache<T>(query: (id: string) => Promise<T>) {
+  const cache = new Map<string, { at: number; data: T }>();
+  const refreshing = new Map<string, Promise<void>>();
+
+  return async function get(id: string): Promise<T> {
+    if (await isCampaignIdActive(id)) return query(id);
+
+    const cached = cache.get(id);
+    if (!cached) {
+      const data = await query(id);
+      cache.set(id, { at: Date.now(), data });
+      return data;
+    }
+
+    if (Date.now() - cached.at >= DETAIL_CACHE_MS && !refreshing.has(id)) {
+      const p = query(id)
+        .then((data) => {
+          cache.set(id, { at: Date.now(), data });
+        })
+        .catch((err) => console.error(`[detail cache] refresh failed for ${id}:`, err))
+        .finally(() => refreshing.delete(id));
+      refreshing.set(id, p);
+    }
+    return cached.data;
+  };
+}
+
+// Stale-while-revalidate for the inactive campaigns' counts — these are the
+// expensive part (scanning guest_post_links/guest_post_prospects/
+// domain_crawl_status/campaign_domains), and for a completed/failed/paused
+// campaign the real numbers underneath literally cannot change, so serving a
+// few seconds' old snapshot costs nothing in correctness. Added 2026-10-26
+// after this query was confirmed as the dashboard's main load-time cost
+// (~1.3-1.6s) AND, live during testing, the thing that tipped the shared
+// Supabase pool into EMAXCONNSESSION — caching it cuts both the steady-state
+// load time and how often this specific query competes for a connection.
+//
+// Deliberately NOT a hard-guaranteed freshness ceiling: refresh only
+// triggers when a request actually arrives while the cache is stale (lazy),
+// not on an independent timer. With this dashboard's actual usage pattern
+// (checked often during active work) that keeps staleness close to
+// INACTIVE_COUNTS_CACHE_MS in practice, but if the page goes unvisited for a
+// while, the next viewer can see an older snapshot than that — acceptable
+// here since nothing is ever wrong, just not perfectly fresh, and the
+// alternative (an always-ticking background timer) would query the DB every
+// cycle even with zero visitors.
+const INACTIVE_COUNTS_CACHE_MS = 8_000;
+let inactiveCountsCache: { at: number; maps: CountMaps } | null = null;
+let inactiveCountsRefreshing: Promise<void> | null = null;
+
+async function getInactiveCampaignCounts(campaignIds: string[]): Promise<CountMaps> {
+  if (campaignIds.length === 0) return emptyCountMaps();
+
+  // Cold start: nothing cached yet, this one call has to actually wait.
+  if (!inactiveCountsCache) {
+    const maps = await queryCampaignCounts(campaignIds);
+    inactiveCountsCache = { at: Date.now(), maps };
+    return maps;
+  }
+
+  const age = Date.now() - inactiveCountsCache.at;
+  if (age >= INACTIVE_COUNTS_CACHE_MS && !inactiveCountsRefreshing) {
+    // Not awaited — this request (and any that arrive before it resolves)
+    // get the still-cached value below; whoever asks after it resolves gets
+    // the fresh one. A failed refresh just leaves the old value in place.
+    inactiveCountsRefreshing = queryCampaignCounts(campaignIds)
+      .then((maps) => {
+        inactiveCountsCache = { at: Date.now(), maps };
+      })
+      .catch((err) => {
+        console.error("[listCampaigns] background counts refresh failed:", err);
+      })
+      .finally(() => {
+        inactiveCountsRefreshing = null;
+      });
+  }
+  return inactiveCountsCache.maps;
+}
+
 // undefined userId (admin) = every campaign. Otherwise, only ones they started.
 export async function listCampaigns(userId?: string) {
   const allCampaignRows = await db
@@ -33,52 +179,23 @@ export async function listCampaigns(userId?: string) {
     .where(userId ? eq(campaigns.createdBy, userId) : undefined)
     .orderBy(desc(campaigns.createdAt));
   const allCampaigns = allCampaignRows.map((r) => ({ ...r.campaign, ownerEmail: r.ownerEmail }));
-  const campaignIds = allCampaigns.map((c) => c.id);
 
-  // Scoped to just the campaigns actually being shown, and combined into ONE
-  // round trip (UNION ALL + a "kind" column, split back apart below) instead
-  // of 4 separate queries. These used to scan guest_post_links/
-  // guest_post_prospects/domain_crawl_status/campaign_domains in FULL on
-  // every dashboard load — confirmed as the main dashboard's real bottleneck
-  // (2026-10-13 outage investigation). Collapsing 4 queries into 1 matters on
-  // top of that: the dashboard's connection pool is capped at 4 total
-  // (src/db/client.ts / lib/db.ts), so 4 simultaneous queries from a single
-  // page load could by itself leave zero spare connections for anyone else
-  // loading the dashboard at the same moment.
-  const idList = sql.join(campaignIds.map((id) => sql`${id}`), sql`, `);
-  const counts = campaignIds.length
-    ? await db.execute(sql`
-        select 'domains' as kind, ${campaignDomains.campaignId} as campaign_id, count(*)::int as n
-          from ${campaignDomains} where ${campaignDomains.campaignId} in (${idList}) group by ${campaignDomains.campaignId}
-        union all
-        select 'statuses', ${domainCrawlStatus.campaignId}, count(*)::int
-          from ${domainCrawlStatus} where ${domainCrawlStatus.campaignId} in (${idList}) group by ${domainCrawlStatus.campaignId}
-        union all
-        select 'links', ${guestPostLinks.campaignId}, count(*)::int
-          from ${guestPostLinks} where ${guestPostLinks.campaignId} in (${idList}) group by ${guestPostLinks.campaignId}
-        union all
-        select 'kept', ${guestPostProspects.campaignId}, count(*)::int
-          from ${guestPostProspects}
-          where ${guestPostProspects.exclusionReason} is null and ${guestPostProspects.campaignId} in (${idList})
-          group by ${guestPostProspects.campaignId}
-      `)
-    : [];
+  const activeIds = allCampaigns.filter(isCampaignActive).map((c) => c.id);
+  const inactiveIds = allCampaigns.filter((c) => !isCampaignActive(c)).map((c) => c.id);
 
-  const domainMap = new Map<string, number>();
-  const statusMap = new Map<string, number>();
-  const linkMap = new Map<string, number>();
-  const keptMap = new Map<string, number>();
-  const mapByKind = { domains: domainMap, statuses: statusMap, links: linkMap, kept: keptMap } as const;
-  for (const row of counts as { kind: keyof typeof mapByKind; campaign_id: string; n: number }[]) {
-    mapByKind[row.kind].set(row.campaign_id, row.n);
-  }
+  // The active set is always fresh (cheap — at most one campaign); the
+  // inactive set is the cached, expensive part. Run both in parallel: they
+  // hit different rows and don't depend on each other.
+  const [activeMaps, inactiveMaps] = await Promise.all([queryCampaignCounts(activeIds), getInactiveCampaignCounts(inactiveIds)]);
+
+  const lookup = (map: keyof CountMaps, id: string) => activeMaps[map].get(id) ?? inactiveMaps[map].get(id) ?? 0;
 
   return allCampaigns.map((c) => ({
     ...c,
-    totalDomains: domainMap.get(c.id) ?? 0,
-    domainsChecked: statusMap.get(c.id) ?? 0,
-    totalLinks: linkMap.get(c.id) ?? 0,
-    keptProspects: keptMap.get(c.id) ?? 0,
+    totalDomains: lookup("domainMap", c.id),
+    domainsChecked: lookup("statusMap", c.id),
+    totalLinks: lookup("linkMap", c.id),
+    keptProspects: lookup("keptMap", c.id),
   }));
 }
 
@@ -87,13 +204,14 @@ export async function listCampaigns(userId?: string) {
 // grouped rows) kept separate from the actual row page (always bounded).
 // ---------------------------------------------------------------------------
 
-export async function getCampaignDomainStatusCounts(id: string) {
+async function queryDomainStatusCounts(id: string) {
   return db
     .select({ status: domainCrawlStatus.status, count: sql<number>`count(*)::int` })
     .from(domainCrawlStatus)
     .where(eq(domainCrawlStatus.campaignId, id))
     .groupBy(domainCrawlStatus.status);
 }
+export const getCampaignDomainStatusCounts = createDetailCache(queryDomainStatusCounts);
 
 export async function getCampaignDomainStatusesPage(id: string, opts: { page?: number; status?: string; search?: string } = {}) {
   const page = Math.max(1, opts.page ?? 1);
@@ -122,13 +240,14 @@ export async function getCampaignDomainStatusesPage(id: string, opts: { page?: n
 // dashboard needs, computed in SQL instead of by scanning every row in JS.
 // ---------------------------------------------------------------------------
 
-export async function getCampaignProspectReasonCounts(id: string) {
+async function queryProspectReasonCounts(id: string) {
   return db
     .select({ reason: guestPostProspects.exclusionReason, count: sql<number>`count(*)::int` })
     .from(guestPostProspects)
     .where(eq(guestPostProspects.campaignId, id))
     .groupBy(guestPostProspects.exclusionReason);
 }
+export const getCampaignProspectReasonCounts = createDetailCache(queryProspectReasonCounts);
 
 const CONTACT_FILTER_KEYS = ["has_email", "has_form", "both", "form_only", "none", "blocked", "failed", "pending"] as const;
 export type ContactFilterKey = (typeof CONTACT_FILTER_KEYS)[number];
@@ -224,7 +343,7 @@ export async function getCampaignBlockedReasons(id: string) {
   return rows.map((r) => r.contactReason);
 }
 
-export async function getCampaignRetryableCount(id: string) {
+async function queryRetryableCount(id: string): Promise<number> {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(guestPostProspects)
@@ -237,6 +356,7 @@ export async function getCampaignRetryableCount(id: string) {
     );
   return count;
 }
+export const getCampaignRetryableCount = createDetailCache(queryRetryableCount);
 
 export async function getCampaignProspectsPage(
   id: string,
@@ -285,21 +405,33 @@ export async function getCampaignProspectsPage(
 // rows or a lightweight aggregate. Nothing here scales with campaign size.
 // ---------------------------------------------------------------------------
 
+// Unique backlink DOMAINS, not raw link rows — the same domain can show up
+// in many articles, and a sales/marketing reader cares about distinct
+// opportunities, not how many times one was mentioned.
+async function queryLinksCount(id: string): Promise<number> {
+  const [{ linksCount }] = await db
+    .select({ linksCount: sql<number>`count(distinct ${guestPostLinks.rootDomain})::int` })
+    .from(guestPostLinks)
+    .where(eq(guestPostLinks.campaignId, id));
+  return linksCount;
+}
+const getCachedLinksCount = createDetailCache(queryLinksCount);
+
+async function queryTotalDomains(id: string): Promise<number> {
+  const [{ totalDomains }] = await db.select({ totalDomains: sql<number>`count(*)::int` }).from(campaignDomains).where(eq(campaignDomains.campaignId, id));
+  return totalDomains;
+}
+const getCachedTotalDomains = createDetailCache(queryTotalDomains);
+
 export async function getCampaignDetail(id: string, opts: { domainPage?: number; domainStatus?: string; domainSearch?: string } = {}) {
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
   if (!campaign) return null;
 
-  const [domainStatusesPage, domainStatusCounts, [{ linksCount }], [{ totalDomains }]] = await Promise.all([
+  const [domainStatusesPage, domainStatusCounts, linksCount, totalDomains] = await Promise.all([
     getCampaignDomainStatusesPage(id, { page: opts.domainPage, status: opts.domainStatus, search: opts.domainSearch }),
     getCampaignDomainStatusCounts(id),
-    // Unique backlink DOMAINS, not raw link rows — the same domain can show up
-    // in many articles, and a sales/marketing reader cares about distinct
-    // opportunities, not how many times one was mentioned.
-    db
-      .select({ linksCount: sql<number>`count(distinct ${guestPostLinks.rootDomain})::int` })
-      .from(guestPostLinks)
-      .where(eq(guestPostLinks.campaignId, id)),
-    db.select({ totalDomains: sql<number>`count(*)::int` }).from(campaignDomains).where(eq(campaignDomains.campaignId, id)),
+    getCachedLinksCount(id),
+    getCachedTotalDomains(id),
   ]);
 
   return {

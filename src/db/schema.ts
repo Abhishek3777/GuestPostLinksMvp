@@ -212,6 +212,13 @@ export const guestPostLinks = pgTable(
   (t) => [
     uniqueIndex("guest_post_links_unique_idx").on(t.campaignId, t.guestPostUrl, t.externalLink),
     index("guest_post_links_root_domain_idx").on(t.rootDomain),
+    // Supports "count distinct root_domain within this one campaign" (the
+    // dashboard's "unique backlink domains" number) — campaignId leads so
+    // Postgres can answer it straight from the index for one campaign's
+    // slice, instead of pulling every matching row out to hash/sort for
+    // distinctness. The single-column root_domain index above doesn't help
+    // this query shape at all; this one is specifically for it.
+    index("guest_post_links_campaign_root_domain_idx").on(t.campaignId, t.rootDomain),
   ]
 ).enableRLS();
 
