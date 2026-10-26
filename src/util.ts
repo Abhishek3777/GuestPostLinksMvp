@@ -2,6 +2,20 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Discovery/extraction hand postDate strings around as loose, unvalidated
+// text pulled from feeds, JSON-LD, URL slugs, etc. — most parse fine, but a
+// genuinely malformed one (confirmed live, 2026-10-24, during the Priya
+// no-posts-found recovery) reaches the DB insert as `new Date(garbage)`,
+// an Invalid Date, and Postgres's driver throws RangeError on
+// .toISOString() at insert time, crashing the whole batch instead of just
+// that one row. Centralizes the same "don't trust it, don't guess, keep
+// going" rule this codebase already applies to missing dates elsewhere.
+export function toValidDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export class TimeoutError extends Error {}
 
 // Hard safety net around a single domain/prospect's worth of work. Every

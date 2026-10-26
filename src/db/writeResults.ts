@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
 import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts, watchedSites } from "./schema.js";
 import type { CrawlDomainResult } from "../pipeline.js";
+import { toValidDate } from "../util.js";
 
 // How many times a crawl-stage crash auto-retries before being left as a
 // genuine "failed" status for a human to look at.
@@ -195,7 +196,7 @@ export async function saveCrawlResult(campaignId: string, result: CrawlDomainRes
         guestPostUrl: r.guestPostUrl,
         externalLink: r.externalLink,
         rootDomain: r.rootDomain,
-        postDate: r.postDate ? new Date(r.postDate) : null,
+        postDate: toValidDate(r.postDate),
       }))
     )
     .onConflictDoNothing() // re-running the same campaign/post/link combo is a no-op, not a duplicate

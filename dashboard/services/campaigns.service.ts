@@ -489,6 +489,34 @@ export async function retryFailedContacts(
 }
 
 // ---------------------------------------------------------------------------
+// Puts every "no posts found" domain of a FINISHED campaign back up for
+// re-crawl and queues the campaign again. Stage 1 (runCampaign.ts) only ever
+// processes domains with NO row in domain_crawl_status yet — deleting just
+// these rows is what makes it pick exactly these domains back up, while
+// every already-checked domain (success, blocked, error, etc.) is left
+// alone and correctly skipped. Re-running then naturally goes through the
+// same filter/dedup stage and, if the campaign has auto-contact on, straight
+// into contact lookup too — the normal end-of-crawl flow, just re-triggered.
+export async function retryNoPostsFound(campaignId: string): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
+  const [c] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+  if (!c) return { ok: false, error: "Campaign not found" };
+  if (c.archivedAt) {
+    return { ok: false, error: "This campaign's detailed data was cleaned up a week after it completed — nothing left to retry." };
+  }
+  if (c.status !== "completed") {
+    return { ok: false, error: "Wait for the campaign to finish before retrying." };
+  }
+
+  const deleted = await db
+    .delete(domainCrawlStatus)
+    .where(and(eq(domainCrawlStatus.campaignId, campaignId), eq(domainCrawlStatus.status, "no_posts_found")))
+    .returning({ domain: domainCrawlStatus.domain });
+  if (deleted.length === 0) return { ok: false, error: "Nothing to retry." };
+
+  await db.update(campaigns).set({ status: "queued", paused: false }).where(eq(campaigns.id, campaignId));
+  return { ok: true, queued: deleted.length };
+}
+
 // Estimated finish time. The maths lives in lib/campaignEta.ts (documented in
 // docs/CAMPAIGN_ETA.md); this gathers its inputs. Every query is an aggregate
 // that returns a few numbers per campaign, never rows, and is only run for

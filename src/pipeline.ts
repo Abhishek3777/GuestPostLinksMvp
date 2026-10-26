@@ -80,29 +80,47 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   const fetcher: Fetcher = opts.signal ? (url) => baseFetcher(url, opts.signal) : baseFetcher;
   const discovery = await discoverPosts(domain, fetcher, opts.days);
 
-  // Sitemap entries carry no date (real dates only get read once a page is
-  // actually fetched, further down), and a sitemap's own URL order is just
-  // "however the CMS generated it" — not a recency guarantee the way a feed
-  // is. Confirmed live, 2026-10-23: 6 of 20 real priority-site domains had
-  // sitemap "win" (returned SOME candidates) while every one of them turned
-  // out too old once actually checked — meanwhile each site's own RSS feed
-  // had today's real posts sitting right there, untried, because sitemap had
-  // already "succeeded" and nothing else was ever attempted. The same gap
-  // applies even when sitemap finds a FEW genuinely new posts: a feed with
-  // ten new posts shouldn't lose to a sitemap that got lucky with one. Fix:
-  // whenever sitemap is what answered, also pull the feed (one cheap request)
-  // and merge in anything it has that the sitemap pile didn't already cover
-  // — the normal date-window ranking/attempt loop below then treats the
-  // combined pool exactly as it would either source alone. wp-api and feed
-  // are NOT given this treatment: both are genuinely recency-ordered by the
-  // site itself, so succeeding there is real evidence of completeness in a
-  // way a sitemap success alone is not.
-  if (discovery.status === "success" && discovery.source === "sitemap") {
+  // The feed is now checked every time discovery succeeds via anything
+  // other than the feed itself — not just when sitemap "wins" (2026-10-24,
+  // revised after the first version of this fix turned out incomplete).
+  // Original gap (fixed 2026-10-23): sitemap "succeeding" with stale
+  // candidates used to permanently block the feed from ever being tried,
+  // even when the feed had the real, current content.
+  // Second gap, found 2026-10-24 from a real audit (Priya, 23 Oct campaign):
+  // merging-in-only-NEW-urls did nothing useful in practice, because a
+  // fresh post is almost always ALREADY in the sitemap's giant candidate
+  // list — just without a date on it (sitemap entries used to carry no date
+  // at all). With no way to tell which of 1,000-2,700 undated candidates
+  // were recent, the attempt loop below tried them in whatever arbitrary
+  // order the sitemap happened to list them in, burned its whole budget on
+  // old ones, and never reached the real recent post sitting further down
+  // the same list — confirmed live: emmareed.net's real Oct 22 post sat at
+  // position 2,718 of 2,728, lawyerscorner.com's at 1,186 of 1,815.
+  // Real fix: sitemap.ts now carries each URL's own <lastmod> as a ranking
+  // hint (confirmed to match real publish timestamps to the second on
+  // multiple real domains), and whenever the feed already has a real date
+  // for a candidate that's already in the pool, that gets backfilled onto
+  // it too — either way, the ranking below can now actually sort by
+  // likely-recency instead of guessing from raw list order. The feed is
+  // still the single most reliable source (genuinely recency-ordered, real
+  // dates, by the site itself), so its own candidates are added outright
+  // when not already present. wp-api is not given this treatment: it's
+  // already genuinely recency-ordered by the site itself, so succeeding
+  // there is real evidence of completeness the way sitemap/html-crawl alone
+  // aren't.
+  if (discovery.status === "success" && discovery.source !== "feed") {
     const robots = await loadRobots(domain);
     const feedPosts = await tryFetchFeed(domain, robots, fetcher);
     if (feedPosts?.length) {
-      const seen = new Set(discovery.posts.map((p) => p.url));
-      for (const p of feedPosts) if (!seen.has(p.url)) discovery.posts.push(p);
+      const byUrl = new Map(discovery.posts.map((p) => [p.url, p]));
+      for (const p of feedPosts) {
+        const existing = byUrl.get(p.url);
+        if (existing) {
+          if (!existing.publishedAt && p.publishedAt) existing.publishedAt = p.publishedAt;
+        } else {
+          discovery.posts.push(p);
+        }
+      }
     }
   }
 
