@@ -1,6 +1,6 @@
 import { asc, desc, eq, gte } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { costBalanceSnapshots, costLedger, costRailwayDaily, costVercelDaily } from "@/lib/schema";
+import { costBalanceSnapshots, costLedger, costRailwayDaily, costRailwayReal, costVercelDaily } from "@/lib/schema";
 
 // Flat monthly plans — spread evenly over the days of each month.
 export const FIXED_COSTS = [
@@ -29,6 +29,8 @@ export interface CostData {
   /** Cost per day per service; prepaid services count on the day they were paid. */
   cash: DailyByService;
   railwaySub: Record<string, Record<string, number>>;
+  /** Railway's OWN real current-period total per tracked project — not our estimate above. Null until the first successful collection. */
+  railwayReal: { periodStart: string; total: number; byProject: { projectName: string; usageDollars: number }[]; collectedAt: string } | null;
   /** Vercel billed items per day (Pro, extra seats, usage); empty until a Vercel token is set. */
   vercelSub: Record<string, Record<string, number>>;
   balances: Record<string, number | null>;
@@ -106,13 +108,27 @@ export async function getCostData(collecting: boolean): Promise<CostData> {
   const today = ymd(new Date());
   const startDay = addDays(today, -89);
 
-  const [fx, railwayRows, vercelRows, ledgerRows, snaps] = await Promise.all([
+  const [fx, railwayRows, vercelRows, ledgerRows, snaps, railwayRealRows] = await Promise.all([
     getUsdInr(),
     db.select().from(costRailwayDaily).where(gte(costRailwayDaily.day, startDay)),
     db.select().from(costVercelDaily).where(gte(costVercelDaily.day, startDay)),
     db.select().from(costLedger).orderBy(desc(costLedger.paidOn)),
     db.select().from(costBalanceSnapshots).orderBy(asc(costBalanceSnapshots.takenAt)),
+    db.select().from(costRailwayReal).orderBy(desc(costRailwayReal.periodStart)),
   ]);
+
+  // Only the most recent billing period's rows — periodStart is the same for
+  // every project within one pull, so the first row's date defines the set.
+  const latestPeriod = railwayRealRows[0]?.periodStart ?? null;
+  const currentPeriodRows = latestPeriod ? railwayRealRows.filter((r) => r.periodStart === latestPeriod) : [];
+  const railwayReal: CostData["railwayReal"] = currentPeriodRows.length
+    ? {
+        periodStart: latestPeriod!,
+        total: currentPeriodRows.reduce((sum, r) => sum + r.usageDollars, 0),
+        byProject: currentPeriodRows.map((r) => ({ projectName: r.projectName, usageDollars: r.usageDollars })),
+        collectedAt: currentPeriodRows.reduce((m, r) => (r.collectedAt > m ? r.collectedAt : m), currentPeriodRows[0].collectedAt).toISOString(),
+      }
+    : null;
 
   const dates: string[] = [];
   for (let d = startDay; d <= today; d = addDays(d, 1)) dates.push(d);
@@ -160,6 +176,7 @@ export async function getCostData(collecting: boolean): Promise<CostData> {
     dates,
     cash,
     railwaySub,
+    railwayReal,
     vercelSub,
     balances: Object.fromEntries(PREPAID.map((s) => [s, latest[s]?.balance ?? null])),
     balancesAt: latestAt?.toISOString() ?? null,

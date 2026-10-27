@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { costBalanceSnapshots, costRailwayDaily, costVercelDaily } from "@/lib/schema";
+import { costBalanceSnapshots, costRailwayDaily, costRailwayReal, costVercelDaily } from "@/lib/schema";
 import { sql } from "drizzle-orm";
 
 // Pulls cost inputs into the DB: priced Railway usage per day per service,
@@ -49,17 +49,35 @@ async function railway<T>(query: string, tries = 5): Promise<T> {
 const iso = (d: Date) => d.toISOString().slice(0, 19) + "Z";
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
+// Only these two Railway projects are ours to track — "helloteam-star's
+// Projects" workspace also holds proud-blessing and laudable-expression
+// (someone else's), and "Kumar Abhishek's Projects" holds guest-post-links
+// separately; WORKSPACE_IDS pulls usage at the whole-workspace level (that's
+// the only granularity Railway's usage query offers), so this filters back
+// down to just the two real projects after the fact. Confirmed live,
+// 2026-10-27: this is why the dashboard's own Railway figure didn't match
+// Railway's own account-wide usage page — they were never scoped the same.
+const TRACKED_PROJECT_NAMES = new Set(["ample-serenity", "ingenious-wonder"]);
+
 async function collectRailway(): Promise<string> {
   if (!process.env.RAILWAY_API_TOKEN) return "railway: RAILWAY_API_TOKEN not set";
 
-  // service id -> "project / service" label
+  // service id -> "project / service" label, only for tracked projects —
+  // everything else's usage gets discarded below (no entry in `names` and no
+  // entry in `allowedServiceIds`).
   const names: Record<string, string> = {};
+  const allowedServiceIds = new Set<string>();
   for (const w of WORKSPACE_IDS) {
     const d = await railway<{
       workspace: { projects: { edges: { node: { name: string; services: { edges: { node: { id: string; name: string } }[] } } }[] } };
     }>(`query { workspace(workspaceId:"${w}") { projects { edges { node { name services { edges { node { id name } } } } } } } }`);
-    for (const { node: p } of d.workspace.projects.edges)
-      for (const { node: s } of p.services.edges) names[s.id] = `${p.name} / ${s.name}`;
+    for (const { node: p } of d.workspace.projects.edges) {
+      if (!TRACKED_PROJECT_NAMES.has(p.name)) continue;
+      for (const { node: s } of p.services.edges) {
+        names[s.id] = `${p.name} / ${s.name}`;
+        allowedServiceIds.add(s.id);
+      }
+    }
   }
 
   const existing = new Set(
@@ -84,7 +102,8 @@ async function collectRailway(): Promise<string> {
       );
       for (const u of d.usage) {
         const sid = u.tags?.serviceId;
-        const label = (sid && names[sid]) || sid || "unknown";
+        if (!sid || !allowedServiceIds.has(sid)) continue; // not one of our two tracked projects
+        const label = names[sid];
         bucket[label] = (bucket[label] ?? 0) + RATES[u.measurement] * u.value;
       }
     }
@@ -98,6 +117,61 @@ async function collectRailway(): Promise<string> {
     }
   }
   return `railway: ${written} rows`;
+}
+
+// Railway's OWN real current-period total, via the CLI's `usage projects`
+// command — not available through the public GraphQL API (confirmed live,
+// 2026-10-27: searched the full public schema, no cost/dollar field exists
+// there, only the raw usage metrics collectRailway above already uses).
+// RAILWAY_API_TOKEN (already required above) authenticates this the same
+// non-interactive way Railway's docs describe for CI/automation use —
+// worth a one-time manual confirmation after this first deploys, since it
+// couldn't be verified here without reading the real token value.
+async function collectRailwayReal(): Promise<string> {
+  if (!process.env.RAILWAY_API_TOKEN) return "railway-real: RAILWAY_API_TOKEN not set";
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  // Resolved via require.resolve, not "npx railway" — npx's own PATH/shim
+  // resolution is platform-dependent (confirmed live, 2026-10-27: "spawn npx
+  // ENOENT" on Windows, since execFile doesn't go through a shell to resolve
+  // npx.cmd). Running the package's own entry file with the same Node
+  // runtime sidesteps that entirely, on any OS.
+  const railwayBin = require.resolve("@railway/cli/bin/railway.js");
+
+  let written = 0;
+  const errors: string[] = [];
+  for (const w of WORKSPACE_IDS) {
+    try {
+      const { stdout } = await run(process.execPath, [railwayBin, "usage", "projects", "--workspace", w, "--period", "current", "--json"], {
+        env: { ...process.env },
+        timeout: 30_000,
+      });
+      const data = JSON.parse(stdout) as {
+        billingPeriod: { start: string };
+        projects: { id: string; name: string; currentUsageDollars: number }[];
+      };
+      const periodStart = data.billingPeriod.start.slice(0, 10);
+      const rows = data.projects
+        .filter((p) => TRACKED_PROJECT_NAMES.has(p.name))
+        .map((p) => ({ periodStart, projectId: p.id, projectName: p.name, usageDollars: p.currentUsageDollars }));
+      if (rows.length) {
+        await db
+          .insert(costRailwayReal)
+          .values(rows)
+          .onConflictDoUpdate({
+            target: [costRailwayReal.periodStart, costRailwayReal.projectId],
+            set: { usageDollars: sql`excluded.usage_dollars`, collectedAt: sql`now()` },
+          });
+        written += rows.length;
+      }
+    } catch (err) {
+      const e = err as { stderr?: unknown; stdout?: unknown; code?: unknown; signal?: unknown };
+      const detail = [e?.stderr, e?.stdout].map(String).filter((s) => s && s !== "undefined").join(" | ");
+      errors.push(`${w}: code=${e?.code} signal=${e?.signal} ${detail || (err instanceof Error ? err.message : String(err))}`);
+    }
+  }
+  return errors.length ? `railway-real: ${written} rows, errors: ${errors.join("; ")}` : `railway-real: ${written} rows`;
 }
 
 // ---------- Vercel ----------
@@ -193,7 +267,7 @@ export function collectCosts(): Promise<string[]> {
   if (running) return running;
   running = (async () => {
     const out: string[] = [];
-    for (const step of [collectBalances, collectRailway, collectVercel]) {
+    for (const step of [collectBalances, collectRailway, collectRailwayReal, collectVercel]) {
       try {
         out.push(await step());
       } catch (e) {

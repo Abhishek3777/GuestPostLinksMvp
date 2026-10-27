@@ -271,6 +271,14 @@ export const costRailwayDaily = pgTable("cost_railway_daily", {
   cost: doublePrecision("cost").notNull(),
 }, (t) => [primaryKey({ columns: [t.day, t.label] })]).enableRLS();
 
+export const costRailwayReal = pgTable("cost_railway_real", {
+  periodStart: date("period_start").notNull(),
+  projectId: text("project_id").notNull(),
+  projectName: text("project_name").notNull(),
+  usageDollars: doublePrecision("usage_dollars").notNull(),
+  collectedAt: timestamp("collected_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.periodStart, t.projectId] })]).enableRLS();
+
 // Vercel's billed charges per day per line item (Pro plan, extra seats, usage),
 // from Vercel's billing API. Overrides the flat $20 estimate where present.
 export const costVercelDaily = pgTable("cost_vercel_daily", {

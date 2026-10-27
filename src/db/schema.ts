@@ -473,6 +473,23 @@ export const costRailwayDaily = pgTable("cost_railway_daily", {
   cost: doublePrecision("cost").notNull(),
 }, (t) => [primaryKey({ columns: [t.day, t.label] })]).enableRLS();
 
+// Railway's OWN computed current-billing-period total per project, straight
+// from `railway usage projects --json` (the real number shown on Railway's
+// own usage page) — not reconstructed from raw metrics × our own guessed
+// unit prices like cost_railway_daily above. That query isn't available
+// through the public, token-authenticated GraphQL API our server calls
+// directly (confirmed live, 2026-10-27 — searched the full public schema,
+// it isn't there); it's the CLI's own command, run on a schedule instead.
+// One row per project per billing period, upserted as the period
+// progresses, so "current period" always reflects the latest pull.
+export const costRailwayReal = pgTable("cost_railway_real", {
+  periodStart: date("period_start").notNull(),
+  projectId: text("project_id").notNull(),
+  projectName: text("project_name").notNull(),
+  usageDollars: doublePrecision("usage_dollars").notNull(),
+  collectedAt: timestamp("collected_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.periodStart, t.projectId] })]).enableRLS();
+
 // Vercel's billed charges per day per line item (Pro plan, extra seats, usage),
 // from Vercel's billing API. Overrides the flat $20 estimate where present.
 export const costVercelDaily = pgTable("cost_vercel_daily", {

@@ -226,6 +226,23 @@ export function CostDashboard({ data }: { data: CostData }) {
         ))}
       </div>
 
+      {data.railwayReal && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted">
+              Railway's own total — current billing period (from {data.railwayReal.periodStart})
+            </div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-text">{money(data.railwayReal.total)}</div>
+            <div className="mt-1 text-xs text-muted">
+              {data.railwayReal.byProject.map((p) => `${p.projectName}: ${money(p.usageDollars)}`).join(" · ")}
+            </div>
+          </div>
+          <div className="max-w-xs text-right text-xs text-muted">
+            Pulled directly from Railway (not reconstructed from raw usage like the Railway figures below, which are an estimate for trend purposes only).
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="Daily cost by service" className="lg:col-span-2">
           <DailyChart dates={dates} per={per} active={active} palette={palette} money={money} />
