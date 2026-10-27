@@ -7,15 +7,13 @@ import { loadDoNotContactSet } from "./db/filterResults.js";
 import { findContact, type ContactResult } from "./contact/findContact.js";
 import { destinationExclusion } from "./contact/destination.js";
 import { createBrowserFetcher } from "./contact/browserFetcher.js";
-import { createCapsolverFetcher } from "./contact/capsolverFetcher.js";
 
 // Post-campaign rescue pass for Stage 3 (contact lookup) — same idea as
 // rescue-domains.ts but for the "Retry blocked & failed" pool. The dashboard's
 // button re-queues these for the DEPLOYED worker, which retries with the exact
 // same plain HTTP from the exact same datacenter IP — so it recovers nothing
 // new. This runs them from THIS machine instead: plain fetch first (a
-// different IP alone recovers some blocks), then a real browser, then
-// CapSolver only if a Turnstile widget is actually present.
+// different IP alone recovers some blocks), then a real browser.
 //
 //   npx tsx src/rescue-contacts.ts <campaignId>
 
@@ -51,9 +49,6 @@ const doNotContact = await loadDoNotContactSet();
 const limit = pLimit(CONCURRENCY);
 const browserLimit = pLimit(BROWSER_LIMIT);
 const browser = await createBrowserFetcher();
-// Held in an object, not a bare `let`: TS's closure narrowing otherwise treats
-// this as permanently null everywhere outside the function that reassigns it.
-const capsolverHolder: { current: Awaited<ReturnType<typeof createCapsolverFetcher>> | null } = { current: null };
 
 let done = 0;
 let recovered = 0;
@@ -63,12 +58,7 @@ async function lookup(domain: string): Promise<{ result: ContactResult; via: str
   if (plain.status !== "blocked") return { result: plain, via: "plain (this machine)" };
 
   const viaBrowser = await browserLimit(() => findContact(domain, browser.fetch));
-  if (viaBrowser.status !== "blocked") return { result: viaBrowser, via: "browser" };
-
-  if (!process.env.CAPSOLVER_API_KEY) return { result: viaBrowser, via: "browser" };
-  capsolverHolder.current ??= await createCapsolverFetcher(process.env.CAPSOLVER_API_KEY);
-  const viaCapsolver = await browserLimit(() => findContact(domain, capsolverHolder.current!.fetch));
-  return { result: viaCapsolver, via: "capsolver" };
+  return { result: viaBrowser, via: "browser" };
 }
 
 await Promise.all(
@@ -99,5 +89,4 @@ await Promise.all(
 
 console.log(`\nRecovered ${recovered} of ${prospects.length}.`);
 await browser.close();
-await capsolverHolder.current?.close();
 process.exit(0);

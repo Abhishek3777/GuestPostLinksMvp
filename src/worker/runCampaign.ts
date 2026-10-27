@@ -4,13 +4,7 @@ import { runFilterStage, seedDirectProspects } from "../filter/index.js";
 import { runContactStage } from "./contactStage.js";
 import { makePauseCheck } from "./pauseCheck.js";
 import { updateContactStageStatus } from "../db/contactResults.js";
-import {
-  browserLimit,
-  getBrowserFetcher,
-  getDirectBrowserFetcher,
-  getCapsolverFetcher,
-  withProxyBudgetTracking,
-} from "../rescueFetchers.js";
+import { browserLimit, getBrowserFetcher } from "../rescueFetchers.js";
 import { countBytes, recordRescueAttempt } from "../rescueStats.js";
 import { withTimeout } from "../util.js";
 
@@ -37,7 +31,6 @@ import {
   getCheckedDomains,
   getDomainsByStatus,
   getProcessedPostUrls,
-  isOverProxyBudget,
   recordCampaignCrash,
   saveCrawlResult,
   updateCampaignStatus,
@@ -45,44 +38,18 @@ import {
 import { resetFailedContacts } from "../db/contactResults.js";
 
 // A domain the plain HTTP client found "blocked" gets one more try from here,
-// through a real browser and (if that's still not enough) CapSolver — same
-// escalation the local rescue-domains.ts script does by hand, just automatic
-// now. Most domains never reach this at all.
+// through a real browser — same escalation the local rescue-domains.ts script
+// does by hand, just automatic now. Most domains never reach this at all.
 async function withBlockedEscalation(domain: string, campaignId: string, opts: CrawlDomainOptions) {
   const plain = await crawlDomain(domain, opts);
   if (plain.discoveryStatus !== "blocked") return plain;
 
   return browserLimit(async () => {
-    // A plain browser, no proxy, tried first — free, and confirmed live
-    // (2026-10-14) to already resolve 2 of 10 real previously-blocked
-    // domains on its own. Only domains still blocked after this reach the
-    // paid proxy below.
-    const direct = await getDirectBrowserFetcher();
-    const directCount = countBytes(direct.fetch);
-    const viaDirect = await crawlDomain(domain, { ...opts, fetcher: directCount.fetch });
-    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "direct_browser", resultStatus: viaDirect.discoveryStatus, bytes: directCount.bytes() });
-    if (viaDirect.discoveryStatus !== "blocked") return viaDirect;
-
-    // Over this campaign's proxy budget: stop escalating further domains to
-    // the paid proxy tier (CapSolver, below, is unaffected — a different,
-    // separately-bounded cost).
-    if (await isOverProxyBudget(campaignId)) {
-      recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "proxy_skipped_budget", resultStatus: viaDirect.discoveryStatus });
-      return viaDirect;
-    }
-
     const browser = await getBrowserFetcher();
-    let proxyBytes = 0;
-    const viaBrowser = await crawlDomain(domain, { ...opts, fetcher: withProxyBudgetTracking(campaignId, browser, (n) => (proxyBytes += n)) });
-    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "proxy_browser", resultStatus: viaBrowser.discoveryStatus, bytes: proxyBytes });
-    if (viaBrowser.discoveryStatus !== "blocked") return viaBrowser;
-
-    const capsolver = getCapsolverFetcher();
-    if (!capsolver) return viaBrowser;
-    let capBytes = 0;
-    const viaCapsolver = await crawlDomain(domain, { ...opts, fetcher: withProxyBudgetTracking(campaignId, await capsolver, (n) => (capBytes += n)) });
-    recordRescueAttempt({ campaignId, domain, stage: "crawl", tier: "capsolver", resultStatus: viaCapsolver.discoveryStatus, bytes: capBytes });
-    return viaCapsolver;
+    const counted = countBytes(browser.fetch);
+    const viaBrowser = await crawlDomain(domain, { ...opts, fetcher: counted.fetch });
+    recordRescueAttempt({ campaignId, domain, stage: "crawl", resultStatus: viaBrowser.discoveryStatus, bytes: counted.bytes() });
+    return viaBrowser;
   });
 }
 

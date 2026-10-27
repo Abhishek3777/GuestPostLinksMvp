@@ -1,6 +1,5 @@
 import type { FetchResult } from "../httpClient.js";
-import { playwrightProxy, sleep } from "../util.js";
-import { isProxyJunk, proxyJunkEnabled } from "./proxyJunk.js";
+import { sleep } from "../util.js";
 
 // A page fetcher that loads the page in a REAL Chromium instead of a plain HTTP
 // request. Some anti-bot walls (SiteGround's "Robot Challenge", Cloudflare's
@@ -29,35 +28,20 @@ export interface BrowserFetcher {
 // page.content()/innerText afterward, never look at how anything actually
 // renders, and the bot-challenge scripts this exists to get past are driven
 // by JS execution, not images/fonts/media — those are pure bandwidth with no
-// purpose here. This is specifically what 2026-10-14's proxy-cost review
-// found: a real browser loads a full page's worth of assets through a paid,
-// metered residential proxy, often 10-100x heavier than the plain HTML these
-// fetches actually need. Stylesheets are deliberately NOT blocked — unlike
-// images/fonts/media, some anti-bot checks genuinely depend on computed CSS
-// state, and CSS is small enough that blocking it isn't where the real
-// savings are anyway.
+// purpose here, and skipping them makes each fetch much faster. Stylesheets
+// are deliberately NOT blocked — unlike images/fonts/media, some anti-bot
+// checks genuinely depend on computed CSS state.
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
-// proxyEnvVar: which env var to read for the proxy (see util.ts's
-// playwrightProxy) — local scripts want their own .env's PROXY_URL, the
-// worker's automatic escalation wants the separately-scoped RESCUE_PROXY_URL.
-export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<BrowserFetcher> {
+export async function createBrowserFetcher(): Promise<BrowserFetcher> {
   let chromium: typeof import("playwright").chromium;
   try {
     ({ chromium } = await import("playwright"));
   } catch {
     throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
   }
-  const proxy = playwrightProxy(proxyEnvVar);
-  const browser = await chromium.launch({ headless: true, proxy });
-  // Third-party junk is only worth refusing where bytes cost money; the
-  // no-proxy browser keeps loading exactly what it always did.
-  const blockJunk = !!proxy && proxyJunkEnabled();
+  const browser = await chromium.launch({ headless: true });
 
-  // Unchanged below this line: the existing challenge-detection/success/
-  // failure logic is deliberately left untouched, line for line — only a
-  // resource filter and a passive byte counter are added alongside it,
-  // neither of which affects what this function decides about a page.
   async function fetchPageInner(url: string, bytesRef: { value: number }): Promise<FetchResult> {
     await sleep(1000); // never hit a site back-to-back
     const context = await browser.newContext({ userAgent: USER_AGENT, locale: "en-US", viewport: { width: 1366, height: 768 } });
@@ -65,7 +49,6 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
     await page.route("**/*", (route) => {
       const type = route.request().resourceType();
       if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
-      if (blockJunk && isProxyJunk(route.request().url(), type)) return route.abort();
       return route.continue();
     });
     page.on("response", (response) => {
@@ -140,7 +123,6 @@ export async function createBrowserFetcher(proxyEnvVar = "PROXY_URL"): Promise<B
     await page.route("**/*", (route) => {
       const type = route.request().resourceType();
       if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
-      if (blockJunk && isProxyJunk(route.request().url(), type)) return route.abort();
       return route.continue();
     });
     page.on("response", (response) => {

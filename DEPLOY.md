@@ -15,12 +15,11 @@ path" at the matching `railway.*.json`.
 **worker**
 - `DATABASE_URL` — required (Supabase pooler, port 6543)
 - optional: `PROXY_URL`, `MIN_HOST_INTERVAL_MS`, `CRAWL_CONCURRENCY`, `CONTACT_CONCURRENCY`, `POLL_INTERVAL_MS` (see `.env.example`)
-- optional, for the blocked-domain escalation (src/rescueFetchers.ts — a real
-  browser, then CapSolver, tried automatically only for a domain the plain
-  HTTP client already found blocked): `CAPSOLVER_API_KEY`, `RESCUE_PROXY_URL`.
-  **Deliberately a different variable from `PROXY_URL`** — that one applies to
-  every plain request, this one only to the escalation path, so routine
-  traffic doesn't burn proxy quota it doesn't need.
+- blocked-domain escalation (src/rescueFetchers.ts — a real browser, tried
+  automatically only for a domain the plain HTTP client already found
+  blocked) needs no keys: the paid proxy (`RESCUE_PROXY_URL`) and CapSolver
+  (`CAPSOLVER_API_KEY`) tiers were removed 2026-10-27 — safe to delete both
+  variables.
   `BROWSER_CONCURRENCY` (default 2) caps how many of those browser pages run at
   once across the whole worker. Raise it (e.g. 6) when contact lookups are slow
   and many domains are being blocked — lookups waiting for a browser page hold

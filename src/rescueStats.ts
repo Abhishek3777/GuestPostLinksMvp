@@ -1,16 +1,19 @@
 import { db } from "./db/client.js";
 import { rescueAttempts } from "./db/schema.js";
 
-export type RescueTier = "direct_browser" | "proxy_browser" | "capsolver" | "proxy_skipped_budget";
 export type RescueStage = "crawl" | "contact";
 
+// A rescue only counts as recovered when the browser reached a real answer —
+// a timeout/error is not a win, and neither is "still blocked".
+const RECOVERED_STATUSES = new Set(["success", "has_email", "form_only", "no_contact_found", "no_posts_found"]);
+
 // Bookkeeping only: a failed write is logged and swallowed, never allowed to
-// fail the crawl or lookup it describes (same rule as addProxyBytesUsed).
+// fail the crawl or lookup it describes. The browser is the only rescue tier
+// left, so every row is tier "direct_browser" (the column stays for old rows).
 export function recordRescueAttempt(row: {
   campaignId: string;
   domain: string;
   stage: RescueStage;
-  tier: RescueTier;
   resultStatus: string;
   bytes?: number;
 }): void {
@@ -19,12 +22,12 @@ export function recordRescueAttempt(row: {
       campaignId: row.campaignId,
       domain: row.domain,
       stage: row.stage,
-      tier: row.tier,
-      recovered: row.tier !== "proxy_skipped_budget" && row.resultStatus !== "blocked",
+      tier: "direct_browser",
+      recovered: RECOVERED_STATUSES.has(row.resultStatus),
       resultStatus: row.resultStatus,
       bytes: Math.round(row.bytes ?? 0),
     })
-    .catch((err) => console.error(`[rescue-stats] failed to record ${row.tier} for ${row.domain}:`, err));
+    .catch((err) => console.error(`[rescue-stats] failed to record rescue for ${row.domain}:`, err));
 }
 
 // Sums bytesTransferred across every page one tier loads for one domain, so a

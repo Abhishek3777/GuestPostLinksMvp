@@ -15,14 +15,7 @@ import { exclusionReason } from "../filter/exclusions.js";
 import { contentLooksLikeGambling } from "../filter/gambling.js";
 import { looksLikeGovOrInstitutional } from "../filter/institutional.js";
 import { makePauseCheck } from "./pauseCheck.js";
-import {
-  browserLimit,
-  getBrowserFetcher,
-  getDirectBrowserFetcher,
-  getCapsolverFetcher,
-  withProxyBudgetTracking,
-} from "../rescueFetchers.js";
-import { isOverProxyBudget } from "../db/writeResults.js";
+import { browserLimit, getBrowserFetcher } from "../rescueFetchers.js";
 import { countBytes, recordRescueAttempt } from "../rescueStats.js";
 
 // The "is this actually a business" AI check (src/filter/businessRelevance.ts)
@@ -81,41 +74,15 @@ async function lookupWithRetry(domain: string, campaignId: string, signal?: Abor
   }
 
   // Blocked (on the first try, or still after the timeout/error retry): one
-  // escalation pass through a real browser, then CapSolver if that specific
-  // wall is an actual solvable captcha. Same as the local rescue-contacts.ts
-  // script, just automatic and one-shot — no repeated hammering of a site
-  // that already said no.
+  // escalation pass through a real browser. Same as the local
+  // rescue-contacts.ts script, just automatic and one-shot — no repeated
+  // hammering of a site that already said no.
   return browserLimit(async () => {
-    // A plain browser, no proxy, tried first — free, and confirmed live
-    // (2026-10-14) to already resolve 2 of 10 real previously-blocked
-    // domains on its own. Only domains still blocked after this reach the
-    // paid proxy below.
-    const direct = await getDirectBrowserFetcher();
-    const directCount = countBytes(direct.fetch);
-    const viaDirect = await findContact(domain, directCount.fetch, signal);
-    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "direct_browser", resultStatus: viaDirect.status, bytes: directCount.bytes() });
-    if (viaDirect.status !== "blocked") return viaDirect;
-
-    // Over this campaign's proxy budget: stop escalating further domains to
-    // the paid proxy tier (CapSolver, below, is unaffected — a different,
-    // separately-bounded cost).
-    if (await isOverProxyBudget(campaignId)) {
-      recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "proxy_skipped_budget", resultStatus: viaDirect.status });
-      return viaDirect;
-    }
-
     const browser = await getBrowserFetcher();
-    let proxyBytes = 0;
-    const viaBrowser = await findContact(domain, withProxyBudgetTracking(campaignId, browser, (n) => (proxyBytes += n)), signal);
-    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "proxy_browser", resultStatus: viaBrowser.status, bytes: proxyBytes });
-    if (viaBrowser.status !== "blocked") return viaBrowser;
-
-    const capsolver = getCapsolverFetcher();
-    if (!capsolver) return viaBrowser;
-    let capBytes = 0;
-    const viaCapsolver = await findContact(domain, withProxyBudgetTracking(campaignId, await capsolver, (n) => (capBytes += n)), signal);
-    recordRescueAttempt({ campaignId, domain, stage: "contact", tier: "capsolver", resultStatus: viaCapsolver.status, bytes: capBytes });
-    return viaCapsolver;
+    const counted = countBytes(browser.fetch);
+    const viaBrowser = await findContact(domain, counted.fetch, signal);
+    recordRescueAttempt({ campaignId, domain, stage: "contact", resultStatus: viaBrowser.status, bytes: counted.bytes() });
+    return viaBrowser;
   });
 }
 
