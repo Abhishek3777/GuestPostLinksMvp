@@ -29,11 +29,16 @@ export async function POST(req: Request) {
     const formData = await req.formData();
     const text = String(formData.get("domainsText") ?? "").trim();
     const file = formData.get("domainsFile") as File | null;
+    // Admin only: upload straight onto someone else's list instead of their
+    // own. Silently ignored for a non-admin so a crafted request can't assign
+    // sites to another member.
+    const assignTo = String(formData.get("assignTo") ?? "").trim();
+    const createdBy = user.role === "admin" && assignTo ? assignTo : user.id;
 
     const domains = [...(file ? await readDomainsFromFile(file) : []), ...(text ? domainsFromText(text) : [])];
     if (!domains.length) return NextResponse.json({ error: "No valid domains found. Add one per row." }, { status: 400 });
 
-    return NextResponse.json(await addSites(domains, user.id));
+    return NextResponse.json(await addSites(domains, createdBy));
   } catch (err) {
     if (err instanceof UnreadableFileError) return NextResponse.json({ error: err.message }, { status: 400 });
     console.error("[api/sites] failed:", err);

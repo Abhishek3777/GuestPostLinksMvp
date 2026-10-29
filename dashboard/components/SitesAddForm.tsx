@@ -4,11 +4,12 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Loader2, Plus, UploadCloud } from "lucide-react";
 
-export function SitesAddForm() {
+export function SitesAddForm({ members }: { members?: { id: string; email: string }[] }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [assignTo, setAssignTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
@@ -21,6 +22,7 @@ export function SitesAddForm() {
     const formData = new FormData();
     if (text.trim()) formData.set("domainsText", text);
     if (file) formData.set("domainsFile", file);
+    if (assignTo) formData.set("assignTo", assignTo);
     const res = await fetch("/api/sites", { method: "POST", body: formData });
     const data = await res.json().catch(() => ({}));
     setBusy(false);
@@ -35,6 +37,7 @@ export function SitesAddForm() {
     setMessage({ tone: "ok", text: parts.join(" · ") });
     setText("");
     setFile(null);
+    setAssignTo("");
     if (fileRef.current) fileRef.current.value = "";
     router.refresh();
   }
@@ -74,6 +77,21 @@ export function SitesAddForm() {
           className="hidden"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />
+        {members && members.length > 0 && (
+          <select
+            value={assignTo}
+            onChange={(e) => setAssignTo(e.target.value)}
+            disabled={busy}
+            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text outline-none ring-accent/40 focus:ring-2 disabled:opacity-50"
+          >
+            <option value="">Assign to me</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                Assign to {m.email}
+              </option>
+            ))}
+          </select>
+        )}
         {message && (
           <span className={`text-xs ${message.tone === "error" ? "text-danger" : "text-muted"}`}>{message.text}</span>
         )}

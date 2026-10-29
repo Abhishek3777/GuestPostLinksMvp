@@ -80,7 +80,7 @@ export default async function SitesPage({
         <StatCard label="Paused" value={pausedTotal.toLocaleString()} icon={Pause} tone="neutral" />
       </div>
 
-      <SitesAddForm />
+      <SitesAddForm members={user.role === "admin" ? members : undefined} />
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">

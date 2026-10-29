@@ -649,6 +649,36 @@ export async function retryNoPostsFound(campaignId: string): Promise<{ ok: true;
   return { ok: true, queued: deleted.length };
 }
 
+// ---------------------------------------------------------------------------
+// For a monitor/incremental campaign started with the wrong settings (wrong
+// days window, wrong domain list) — lets the operator restart it as a true
+// from-scratch crawl instead of manually clearing DB rows. Flips `incremental`
+// off so the worker stops consulting processed_posts for every domain still
+// to come, and clears this campaign's own domain_crawl_status so domains it
+// already finished (with stale pre-correction settings) get re-checked too.
+//
+// Deliberately does NOT touch processed_posts itself — that table is shared
+// across every campaign that has ever monitored a domain, keyed only by post
+// URL, not campaign. Deleting rows from it here would also erase dedup
+// history for other, unrelated campaigns relying on it (see 2026-10-27
+// incident: this is a scoped, no-side-effect replacement for doing that by
+// hand).
+export async function forceFreshRecrawl(campaignId: string): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
+  const [c] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+  if (!c) return { ok: false, error: "Campaign not found" };
+  if (c.archivedAt) {
+    return { ok: false, error: "This campaign's detailed data was cleaned up a week after it completed — nothing left to restart." };
+  }
+  if (!c.incremental) {
+    return { ok: false, error: "This campaign isn't using prior-run history, so there's nothing to ignore — it already crawls fresh." };
+  }
+
+  const deleted = await db.delete(domainCrawlStatus).where(eq(domainCrawlStatus.campaignId, campaignId)).returning({ domain: domainCrawlStatus.domain });
+
+  await db.update(campaigns).set({ incremental: false, status: "queued", paused: false }).where(eq(campaigns.id, campaignId));
+  return { ok: true, queued: deleted.length };
+}
+
 // Estimated finish time. The maths lives in lib/campaignEta.ts (documented in
 // docs/CAMPAIGN_ETA.md); this gathers its inputs. Every query is an aggregate
 // that returns a few numbers per campaign, never rows, and is only run for

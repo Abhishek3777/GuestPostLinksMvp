@@ -19,6 +19,7 @@ import { RunContactStageButton } from "@/components/RunContactStageButton";
 import { PauseResumeButton } from "@/components/PauseResumeButton";
 import { RetryFailedButton } from "@/components/RetryFailedButton";
 import { RetryNoPostsFoundButton } from "@/components/RetryNoPostsFoundButton";
+import { ForceFreshRecrawlButton } from "@/components/ForceFreshRecrawlButton";
 import { DeleteCampaignButton } from "@/components/DeleteCampaignButton";
 import { CampaignTabs } from "@/components/CampaignTabs";
 import { canPauseOrResume, displayStatus, isActive } from "@/lib/campaignState";
@@ -113,6 +114,7 @@ export default async function CampaignDetailPage({
   const blockedCount = domainStatusCounts.find((s) => s.status === "blocked")?.count ?? 0;
   const noPostsFoundCount = domainStatusCounts.find((s) => s.status === "no_posts_found")?.count ?? 0;
   const canRetryNoPostsFound = !isActive(campaign) && campaign.status === "completed" && noPostsFoundCount > 0;
+  const canForceFreshRecrawl = campaign.incremental && !campaign.archivedAt;
 
   const canRunContactStage =
     campaign.mode === "discovery" && campaign.status === "completed" && campaign.contactStageStatus === "not_started";
@@ -135,6 +137,7 @@ export default async function CampaignDetailPage({
             {pauseAction && <PauseResumeButton campaignId={campaign.id} action={pauseAction} />}
             {canRetry && <RetryFailedButton campaignId={campaign.id} count={retryableCount} />}
             {canRetryNoPostsFound && <RetryNoPostsFoundButton campaignId={campaign.id} count={noPostsFoundCount} />}
+            {canForceFreshRecrawl && <ForceFreshRecrawlButton campaignId={campaign.id} />}
             {canRunContactStage && keptCount > 0 && <RunContactStageButton campaignId={campaign.id} />}
             {(totalProspects > 0 || domainStatusesTotal > 0) && (
               <>
