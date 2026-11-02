@@ -97,17 +97,19 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   // the same list — confirmed live: emmareed.net's real Oct 22 post sat at
   // position 2,718 of 2,728, lawyerscorner.com's at 1,186 of 1,815.
   // Real fix: sitemap.ts now carries each URL's own <lastmod> as a ranking
-  // hint (confirmed to match real publish timestamps to the second on
-  // multiple real domains), and whenever the feed already has a real date
-  // for a candidate that's already in the pool, that gets backfilled onto
-  // it too — either way, the ranking below can now actually sort by
-  // likely-recency instead of guessing from raw list order. The feed is
-  // still the single most reliable source (genuinely recency-ordered, real
-  // dates, by the site itself), so its own candidates are added outright
-  // when not already present. wp-api is not given this treatment: it's
-  // already genuinely recency-ordered by the site itself, so succeeding
-  // there is real evidence of completeness the way sitemap/html-crawl alone
-  // aren't.
+  // hint, in its own sitemapLastmod field (confirmed to match real publish
+  // timestamps to the second on multiple real domains) — never in
+  // publishedAt, which stays null until something trustworthy sets it. That
+  // means the backfill below (existing.publishedAt is still empty for every
+  // sitemap candidate) now actually fires: whenever the feed already has a
+  // real date for a candidate that's already in the pool, it gets backfilled
+  // onto it, and the ranking below can sort by real likely-recency instead
+  // of guessing from raw list order. The feed is still the single most
+  // reliable source (genuinely recency-ordered, real dates, by the site
+  // itself), so its own candidates are added outright when not already
+  // present. wp-api is not given this treatment: it's already genuinely
+  // recency-ordered by the site itself, so succeeding there is real evidence
+  // of completeness the way sitemap/html-crawl alone aren't.
   if (discovery.status === "success" && discovery.source !== "feed") {
     const robots = await loadRobots(domain);
     const feedPosts = await tryFetchFeed(domain, robots, fetcher);

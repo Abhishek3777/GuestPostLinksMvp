@@ -13,21 +13,32 @@ function asArray<T>(value: T | T[] | undefined): T[] {
 
 // <lastmod> used to be discarded entirely here ("page last touched, not
 // originally published" — a real risk for a page edited long after it was
-// first written). Reintroduced 2026-10-24, but only as a ranking HINT, same
-// role dateFromUrlPath already plays in selectRecent.ts — never the final
-// accepted date, which still only ever comes from actually reading the real
-// page later. Confirmed live against several real domains that day:
-// <lastmod> matched the true publish timestamp to the second whenever it
-// was checkable, and this is the same signal Google/Bing's own crawlers
-// prioritize re-crawling by. The asymmetry that makes this safe: using it to
-// decide WHAT ORDER to try candidates in can only help — worst case is the
-// same as before (an arbitrary try order) — it can never cause a wrong date
-// to be reported, since the real page is still what's actually trusted.
+// first written). Reintroduced 2026-10-24 as a ranking hint — but it went
+// into the SAME publishedAt field selectRecent.ts and pipeline.ts both treat
+// as a trustworthy date, so any sitemap post whose real page had no readable
+// on-page date (broken theme, no structured data) silently fell back to
+// <lastmod> as its FINAL accepted date too — the exact "last touched" ≠
+// "published" mistake this was meant to avoid, just reopened through a side
+// door. Confirmed live, 2026-11-02: thestuffofsuccess.com posts from 2019,
+// 2020 and early 2025 (real dates sitting right in their URLs) were kept as
+// "recent" because their pages carry no JSON-LD/OG/<time> date and their
+// sitemap <lastmod> had been bumped recently for unrelated reasons.
+//
+// Fixed by giving <lastmod> its own field (sitemapLastmod, see types.ts) —
+// selectRecent.ts still uses it to decide what order to try candidates in
+// (that part of the Oct 24 change was correct and stays), but publishedAt
+// now stays null here exactly as it did before Oct 24, so the final
+// day-window check in pipeline.ts falls through to dateFromUrlPath — which
+// correctly reads 2019/2020/2025 off the URL — instead of trusting <lastmod>.
 async function parseUrlset(xml: string): Promise<DiscoveredPost[]> {
   const parsed = parser.parse(xml);
   const entries = asArray<any>(parsed?.urlset?.url);
   return entries
-    .map((e) => ({ url: e.loc, publishedAt: typeof e.lastmod === "string" ? e.lastmod : null }))
+    .map((e) => ({
+      url: e.loc,
+      publishedAt: null,
+      sitemapLastmod: typeof e.lastmod === "string" ? e.lastmod : null,
+    }))
     .filter((p) => typeof p.url === "string") as DiscoveredPost[];
 }
 

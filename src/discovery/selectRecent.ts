@@ -9,23 +9,27 @@ export interface RecencyOptions {
 
 // Sitemap discovery deliberately never sets publishedAt (see sitemap.ts —
 // a sitemap's <lastmod> means "page last touched", not "published", so
-// trusting it caused its own accuracy problems). That's still correct, but
-// it left every sitemap-sourced candidate with NO date at this stage at
-// all, which meant the "process newest first" sort below was a no-op for
-// them — confirmed live, 2026-10-18: a domain whose sitemap listed 5,000
-// candidates in no particular useful order could spend its entire time
-// budget on arbitrarily-ordered posts, with no better chance of covering
-// the genuinely recent ones than the genuinely ancient ones, when it ran
-// out of time before finishing.
+// trusting it as a real date caused its own accuracy problems). That left
+// every sitemap-sourced candidate with NO date at this stage, which meant
+// the "process newest first" sort below was a no-op for them — confirmed
+// live, 2026-10-18: a domain whose sitemap listed 5,000 candidates in no
+// particular useful order could spend its entire time budget on
+// arbitrarily-ordered posts, with no better chance of covering the genuinely
+// recent ones than the genuinely ancient ones, when it ran out of time
+// before finishing.
 //
-// dateFromUrlPath is the same already-trusted signal already used as the
-// last-resort fallback for the FINAL authoritative date (articleSignal.ts) —
-// this reuses it one step earlier, purely to triage which candidates are
-// worth trying first and which are obviously too old to bother with at all,
-// never as the final word on whether a post actually counts (that's still
-// decided later, from the real page content).
+// Two ranking-only hints fill that gap, in order: dateFromUrlPath (the same
+// already-trusted signal used as the last-resort fallback for the FINAL
+// authoritative date in articleSignal.ts), then sitemapLastmod (confirmed to
+// match real publish timestamps to the second whenever checkable — a good
+// proxy for recency, just never trustworthy enough to be an accepted date).
+// Both are purely for triaging which candidates are worth trying first and
+// which are obviously too old to bother with at all — never the final word
+// on whether a post actually counts (that's still decided later, from the
+// real page content, or from the URL again as pipeline.ts's own fallback —
+// deliberately NOT from sitemapLastmod, which never leaves this file).
 function hintedDate(p: DiscoveredPost): string | null {
-  return p.publishedAt ?? dateFromUrlPath(p.url);
+  return p.publishedAt ?? dateFromUrlPath(p.url) ?? p.sitemapLastmod ?? null;
 }
 
 // Filters + sorts candidates newest-first, but does NOT slice to maxCount —
