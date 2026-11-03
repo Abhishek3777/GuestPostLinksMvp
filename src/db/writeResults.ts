@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
-import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, processedPosts, watchedSites } from "./schema.js";
+import { campaignDomains, campaigns, domainCrawlStatus, guestPostLinks, watchedSites } from "./schema.js";
 import type { CrawlDomainResult } from "../pipeline.js";
 import { toValidDate } from "../util.js";
 
@@ -103,16 +103,6 @@ export async function getDomainsByStatus(campaignId: string, status: (typeof dom
   return rows.map((r) => r.domain);
 }
 
-// Post URLs earlier runs already finished with for this domain — a monitoring
-// run skips them so it only reads NEW posts.
-export async function getProcessedPostUrls(domain: string): Promise<Set<string>> {
-  const rows = await db
-    .select({ url: processedPosts.postUrl })
-    .from(processedPosts)
-    .where(eq(processedPosts.sourceDomain, domain));
-  return new Set(rows.map((r) => r.url));
-}
-
 export async function updateCampaignStatus(
   campaignId: string,
   status: (typeof campaigns.$inferInsert)["status"],
@@ -145,22 +135,6 @@ export async function saveCrawlResult(campaignId: string, result: CrawlDomainRes
         checkedAt: new Date(),
       },
     });
-
-  // Remember every post this run finished with (any kind of campaign), so a
-  // later monitoring run does not read it again.
-  if (result.processedPosts.length) {
-    await db
-      .insert(processedPosts)
-      .values(
-        result.processedPosts.map((p) => ({
-          sourceDomain: result.domain,
-          postUrl: p.url,
-          outcome: p.outcome,
-          linksFound: p.linksFound,
-        }))
-      )
-      .onConflictDoNothing();
-  }
 
   if (result.rows.length === 0) return;
 

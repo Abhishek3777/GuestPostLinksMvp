@@ -1,7 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "./db/client.js";
 import { campaigns, domainCrawlStatus } from "./db/schema.js";
-import { getProcessedPostUrls, saveCrawlResult } from "./db/writeResults.js";
+import { saveCrawlResult } from "./db/writeResults.js";
 import { crawlDomain } from "./pipeline.js";
 import { createBrowserFetcher } from "./contact/browserFetcher.js";
 
@@ -47,8 +47,7 @@ const browser = await createBrowserFetcher();
 
 let recovered = 0;
 for (const domain of domains) {
-  const skipPostUrls = campaign.incremental ? await getProcessedPostUrls(domain) : undefined;
-  const crawlOpts = { targetPostCount: campaign.targetPostCount, days: campaign.daysWindow ?? undefined, skipPostUrls };
+  const crawlOpts = { targetPostCount: campaign.targetPostCount, days: campaign.daysWindow ?? undefined };
 
   const result = await crawlDomain(domain, { ...crawlOpts, fetcher: browser.fetch });
 

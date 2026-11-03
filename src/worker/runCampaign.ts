@@ -30,7 +30,6 @@ import {
   getCampaignDomains,
   getCheckedDomains,
   getDomainsByStatus,
-  getProcessedPostUrls,
   recordCampaignCrash,
   saveCrawlResult,
   updateCampaignStatus,
@@ -122,7 +121,6 @@ async function recoverFailures(campaignId: string, campaign: NonNullable<Awaited
                   targetPostCount: campaign.targetPostCount,
                   days: campaign.daysWindow ?? undefined,
                   deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
-                  skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
                   signal: controller.signal,
                 }),
                 PER_DOMAIN_TIMEOUT_MS,
@@ -228,7 +226,6 @@ export async function runCampaignWorker(campaignId: string): Promise<void> {
                   // was always getting externally killed and dumped into generic
                   // "error" despite actively succeeding the whole time.
                   deadline: Date.now() + PER_DOMAIN_TIMEOUT_MS - 30_000,
-                  skipPostUrls: campaign.incremental ? await getProcessedPostUrls(domain) : undefined,
                   signal: controller.signal,
                 }),
                 PER_DOMAIN_TIMEOUT_MS,
