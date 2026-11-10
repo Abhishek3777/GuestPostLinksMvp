@@ -34,11 +34,26 @@ export interface BrowserFetcher {
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 export async function createBrowserFetcher(): Promise<BrowserFetcher> {
+  // Stealth-patched, not vanilla Playwright: confirmed live, 2026-11-06,
+  // 82% of blocked domains (campaign 22a35721) read as "browser_challenge" —
+  // a real headless Chromium already loaded the page and still got served an
+  // interstitial, because the site's bot-detection fingerprints the
+  // automated browser itself (navigator.webdriver, missing chrome.runtime,
+  // headless WebGL renderer, etc.), separately from the IP-reputation issue
+  // the removed DataImpulse proxy tier was meant for (see rescueFetchers.ts —
+  // that one measured no lift). playwright-extra + puppeteer-extra-plugin-
+  // stealth patches exactly those fingerprint tells; same API as plain
+  // playwright's chromium, drop-in.
   let chromium: typeof import("playwright").chromium;
   try {
-    ({ chromium } = await import("playwright"));
+    const { chromium: stealthChromium } = await import("playwright-extra");
+    const { default: StealthPlugin } = await import("puppeteer-extra-plugin-stealth");
+    stealthChromium.use(StealthPlugin());
+    chromium = stealthChromium as unknown as typeof import("playwright").chromium;
   } catch {
-    throw new Error("Playwright is not installed. Run:  npm i -D playwright  then  npx playwright install chromium");
+    throw new Error(
+      "playwright-extra / puppeteer-extra-plugin-stealth not installed. Run:  npm i playwright-extra puppeteer-extra-plugin-stealth  then  npx playwright install chromium"
+    );
   }
   const browser = await chromium.launch({ headless: true });
 

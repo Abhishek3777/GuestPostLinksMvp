@@ -17,7 +17,14 @@ const client = postgres(connectionString, {
   // stays under the 15 cap even if both are maxed out simultaneously.
   // Per-domain DB writes are a small, fast fraction of crawl time (dominated
   // by network fetches), so this shouldn't meaningfully affect crawl speed.
-  max: 10,
+  // Overridable via DB_POOL_MAX — confirmed live, 2026-11-10: a separate
+  // process importing this same file (e.g. a local/Railway one-off script)
+  // gets its OWN pool at whatever this default is, additive on top of the
+  // worker's 10 + dashboard's 4 against the pooler's real 15-connection
+  // ceiling noted above. A one-off script barely touches the DB (one write
+  // per domain, browser-fetch time dominates), so it should ask for far
+  // fewer than the always-on worker does.
+  max: Number(process.env.DB_POOL_MAX) || 10,
   // Confirmed live, 2026-10-18: without this, a session-mode connection
   // (below) never gives its slot back once opened, even when genuinely
   // unused — unlike transaction mode, which hands the real connection back
