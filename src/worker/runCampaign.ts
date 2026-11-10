@@ -24,7 +24,20 @@ import { withTimeout } from "../util.js";
 // measured ~200s baseline instead of guessing; CRAWL_CONCURRENCY was also
 // lowered (65 -> 35) alongside this, since contention from running too many
 // domains at once was the deeper cause, not just the cap being short.
-const PER_DOMAIN_TIMEOUT_MS = 6 * 60_000;
+//
+// Raised 6 -> 15 minutes, 2026-11-10: confirmed live against a real 4,665-
+// domain campaign that genuinely large/active sites (hundreds of real,
+// in-window posts) were hitting this ceiling at only ~100-120 processed,
+// every one logged "likely more available ... not a failure" — real
+// recoverable data being left on the table purely because of wall-clock,
+// not because the site was unreachable or slow. Deliberately NOT jumped
+// higher than this in one step, same reasoning as the 3->6 change above:
+// a longer per-domain ceiling means each of CRAWL_CONCURRENCY's slots can
+// stay occupied longer on average, which raises real memory/CPU pressure
+// even though the slot COUNT hasn't changed — and this worker just came out
+// of a real heap-limit crash-loop this same week. Watch real memory/CPU on
+// the next campaign this runs against before considering raising it further.
+const PER_DOMAIN_TIMEOUT_MS = 15 * 60_000;
 import {
   getCampaign,
   getCampaignDomains,

@@ -3,7 +3,19 @@ import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
-const parser = new XMLParser({ ignoreAttributes: false });
+// fast-xml-parser's processEntities.maxTotalExpansions defaults to 1000 — a
+// flat count of every &amp;/&#8217;-style substitution in the whole document,
+// meant to guard against a "billion laughs" entity bomb. Confirmed live,
+// 2026-11-09: a large, entirely legitimate feed (totalhealth.co.uk) threw
+// "Entity expansion limit exceeded: 1132 > 1000" just from ordinary
+// ampersands/smart-quotes across its real articles, well under what an
+// actual bomb would hit. The real defense against exponential nested-entity
+// bombs is maxExpansionDepth/maxEntitySize below, left at their strict
+// defaults — only the flat total-count ceiling needed raising.
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  processEntities: { maxTotalExpansions: 50_000, maxExpandedLength: 2_000_000 },
+});
 const FEED_PATHS = ["/feed", "/feed/", "/rss.xml", "/atom.xml", "/blog/feed"];
 
 function asArray<T>(value: T | T[] | undefined): T[] {

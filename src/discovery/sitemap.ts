@@ -3,7 +3,13 @@ import { fetchText, type Fetcher } from "../httpClient.js";
 import type { RobotsGate } from "../robots.js";
 import type { DiscoveredPost } from "../types.js";
 
-const parser = new XMLParser({ ignoreAttributes: false });
+// Same processEntities fix as feed.ts's parser, same real bug (confirmed
+// live both in production, feed.ts, 2026-11-09, and locally against this
+// file, 2026-11-09) — see that file's comment for the full explanation.
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  processEntities: { maxTotalExpansions: 50_000, maxExpandedLength: 2_000_000 },
+});
 const MAX_SUB_SITEMAPS = 5;
 
 function asArray<T>(value: T | T[] | undefined): T[] {
