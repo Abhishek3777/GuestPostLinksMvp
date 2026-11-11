@@ -37,7 +37,20 @@ import { withTimeout } from "../util.js";
 // even though the slot COUNT hasn't changed — and this worker just came out
 // of a real heap-limit crash-loop this same week. Watch real memory/CPU on
 // the next campaign this runs against before considering raising it further.
-const PER_DOMAIN_TIMEOUT_MS = 15 * 60_000;
+//
+// Raised 15 -> 30 minutes, 2026-11-11: the 15-minute step held up clean —
+// checked live against "Shilpi 5 Nov 25k" (13,544 domains so far): worker
+// logs show zero heap/OOM/crash signals, and the blocked rate (974/13,544,
+// ~7.2%) is unchanged from the historical baseline, confirming this ceiling
+// only affects how much of an ALREADY-reachable site gets read, never
+// whether a site blocks us — so it can't be inflating the blocked count.
+// Real upside confirmed too: 966 of 9,972 successful domains (~10%) were
+// still hitting the 15-minute wall, some with thousands of untapped real
+// candidates (e.g. one domain: 290 processed of 4,001 real candidates).
+// Same incremental discipline as the last step — doubling again, not
+// jumping further, so the next check has a clean baseline to compare
+// against before going beyond 30.
+const PER_DOMAIN_TIMEOUT_MS = 30 * 60_000;
 import {
   getCampaign,
   getCampaignDomains,
