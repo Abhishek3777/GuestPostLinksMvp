@@ -137,37 +137,27 @@ function createDetailCache<T>(query: (id: string) => Promise<T>) {
 // here since nothing is ever wrong, just not perfectly fresh, and the
 // alternative (an always-ticking background timer) would query the DB every
 // cycle even with zero visitors.
-const INACTIVE_COUNTS_CACHE_MS = 8_000;
-let inactiveCountsCache: { at: number; maps: CountMaps } | null = null;
-let inactiveCountsRefreshing: Promise<void> | null = null;
+type CachedCountsRow = { id: string; totalDomains: number; domainsChecked: number; totalLinks: number; keptProspects: number };
 
-async function getInactiveCampaignCounts(campaignIds: string[]): Promise<CountMaps> {
-  if (campaignIds.length === 0) return emptyCountMaps();
-
-  // Cold start: nothing cached yet, this one call has to actually wait.
-  if (!inactiveCountsCache) {
-    const maps = await queryCampaignCounts(campaignIds);
-    inactiveCountsCache = { at: Date.now(), maps };
-    return maps;
-  }
-
-  const age = Date.now() - inactiveCountsCache.at;
-  if (age >= INACTIVE_COUNTS_CACHE_MS && !inactiveCountsRefreshing) {
-    // Not awaited — this request (and any that arrive before it resolves)
-    // get the still-cached value below; whoever asks after it resolves gets
-    // the fresh one. A failed refresh just leaves the old value in place.
-    inactiveCountsRefreshing = queryCampaignCounts(campaignIds)
-      .then((maps) => {
-        inactiveCountsCache = { at: Date.now(), maps };
-      })
-      .catch((err) => {
-        console.error("[listCampaigns] background counts refresh failed:", err);
-      })
-      .finally(() => {
-        inactiveCountsRefreshing = null;
-      });
-  }
-  return inactiveCountsCache.maps;
+// Writes the just-computed counts onto each campaign's own row, permanently
+// — see the cached_* columns' comment in src/db/schema.ts. One UPDATE per
+// campaign rather than a single batched statement: in steady state this
+// only ever runs for campaigns that just went inactive for the first time
+// since the last load (a handful at most), not the whole table.
+async function persistCachedCounts(rows: CachedCountsRow[]): Promise<void> {
+  await Promise.all(
+    rows.map((r) =>
+      db
+        .update(campaigns)
+        .set({
+          cachedTotalDomains: r.totalDomains,
+          cachedDomainsChecked: r.domainsChecked,
+          cachedTotalLinks: r.totalLinks,
+          cachedKeptProspects: r.keptProspects,
+        })
+        .where(eq(campaigns.id, r.id))
+    )
+  );
 }
 
 // undefined userId (admin) = every campaign. Otherwise, only ones they started.
@@ -181,22 +171,89 @@ export async function listCampaigns(userId?: string) {
   const allCampaigns = allCampaignRows.map((r) => ({ ...r.campaign, ownerEmail: r.ownerEmail }));
 
   const activeIds = allCampaigns.filter(isCampaignActive).map((c) => c.id);
-  const inactiveIds = allCampaigns.filter((c) => !isCampaignActive(c)).map((c) => c.id);
+  const inactive = allCampaigns.filter((c) => !isCampaignActive(c));
 
-  // The active set is always fresh (cheap — at most one campaign); the
-  // inactive set is the cached, expensive part. Run both in parallel: they
-  // hit different rows and don't depend on each other.
-  const [activeMaps, inactiveMaps] = await Promise.all([queryCampaignCounts(activeIds), getInactiveCampaignCounts(inactiveIds)]);
+  // An inactive campaign's real numbers can never change again — once
+  // cached_* is written for it, every future load reads it straight off the
+  // row below, no query at all. Only a campaign that just went inactive
+  // since the last time this ran (cached_* still null) needs computing.
+  // This replaces a query that re-scanned EVERY inactive campaign on EVERY
+  // page load — confirmed live, 2026-11-13, as the actual cause of 10-15s
+  // loads, and separately confirmed hitting Postgres's own statement_timeout
+  // outright as the data grew.
+  const uncachedInactive = inactive.filter((c) => c.cachedTotalDomains === null);
 
-  const lookup = (map: keyof CountMaps, id: string) => activeMaps[map].get(id) ?? inactiveMaps[map].get(id) ?? 0;
+  // Archived campaigns are a separate case: their detail rows (the same
+  // ones the live query below reads) are already DELETED by archiveCampaign
+  // — querying them would silently cache zeros forever. Their real numbers
+  // are frozen in archivedSummary instead, computed from the exact same
+  // data before it was deleted — use that, no query needed at all.
+  const uncachedArchived = uncachedInactive.filter((c) => c.archivedAt && c.archivedSummary);
+  const uncachedLive = uncachedInactive.filter((c) => !(c.archivedAt && c.archivedSummary));
+  const uncachedLiveIds = uncachedLive.map((c) => c.id);
 
-  return allCampaigns.map((c) => ({
-    ...c,
-    totalDomains: lookup("domainMap", c.id),
-    domainsChecked: lookup("statusMap", c.id),
-    totalLinks: lookup("linkMap", c.id),
-    keptProspects: lookup("keptMap", c.id),
+  const [activeMaps, freshInactiveMaps] = await Promise.all([
+    queryCampaignCounts(activeIds),
+    queryCampaignCounts(uncachedLiveIds),
+  ]);
+
+  const archivedRows: CachedCountsRow[] = uncachedArchived.map((c) => {
+    const s = c.archivedSummary!;
+    return {
+      id: c.id,
+      totalDomains: s.totalDomains,
+      domainsChecked: s.domainStatusCounts.reduce((sum, r) => sum + r.count, 0),
+      // Distinct root domains, not a raw row count (the raw guest_post_links
+      // rows are gone) — the closest real number archiving kept, same as
+      // what the archived summary page itself already shows for this field.
+      totalLinks: s.linksCount,
+      keptProspects: s.contactStats.kept,
+    };
+  });
+  const liveRows: CachedCountsRow[] = uncachedLive.map((c) => ({
+    id: c.id,
+    totalDomains: freshInactiveMaps.domainMap.get(c.id) ?? 0,
+    domainsChecked: freshInactiveMaps.statusMap.get(c.id) ?? 0,
+    totalLinks: freshInactiveMaps.linkMap.get(c.id) ?? 0,
+    keptProspects: freshInactiveMaps.keptMap.get(c.id) ?? 0,
   }));
+  if (archivedRows.length + liveRows.length > 0) {
+    // Not awaited — this response already has the numbers it needs below;
+    // writing them back is purely so the NEXT load is free, nothing this
+    // request itself needs to wait on.
+    persistCachedCounts([...archivedRows, ...liveRows]).catch((err) =>
+      console.error("[listCampaigns] failed to persist cached counts:", err)
+    );
+  }
+  const archivedById = new Map(archivedRows.map((r) => [r.id, r]));
+  const lookup = (map: keyof CountMaps, id: string) => activeMaps[map].get(id) ?? freshInactiveMaps[map].get(id) ?? 0;
+
+  return allCampaigns.map((c) => {
+    if (!isCampaignActive(c)) {
+      // Already cached (the common case, after the first load following
+      // this change): straight off the row, zero extra computation.
+      if (c.cachedTotalDomains !== null) {
+        return {
+          ...c,
+          totalDomains: c.cachedTotalDomains,
+          domainsChecked: c.cachedDomainsChecked ?? 0,
+          totalLinks: c.cachedTotalLinks ?? 0,
+          keptProspects: c.cachedKeptProspects ?? 0,
+        };
+      }
+      const archived = archivedById.get(c.id);
+      if (archived) {
+        return { ...c, totalDomains: archived.totalDomains, domainsChecked: archived.domainsChecked, totalLinks: archived.totalLinks, keptProspects: archived.keptProspects };
+      }
+    }
+    return {
+      ...c,
+      totalDomains: lookup("domainMap", c.id),
+      domainsChecked: lookup("statusMap", c.id),
+      totalLinks: lookup("linkMap", c.id),
+      keptProspects: lookup("keptMap", c.id),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

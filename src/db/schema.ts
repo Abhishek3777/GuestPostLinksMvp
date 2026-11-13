@@ -136,6 +136,21 @@ export const campaigns = pgTable("campaigns", {
   // proxy actually being used" — queryable per campaign going forward,
   // not just a number that lived in memory and vanished.
   proxyBytesUsed: bigint("proxy_bytes_used", { mode: "number" }).notNull().default(0),
+  // Frozen counts for the campaigns list page — null means "not computed
+  // yet" (still active, or an older row from before this existed). Written
+  // ONCE, lazily, by the dashboard the first time it finds an inactive
+  // campaign (see isCampaignActive in campaigns.service.ts) whose counts are
+  // still null — never recomputed after that, since a completed/failed/
+  // paused campaign's real numbers cannot change. Built 2026-11-13: the
+  // dashboard's campaigns list was re-running a 4-table UNION ALL scan
+  // across every inactive campaign on every single page load, confirmed
+  // live as the actual cause of the page hanging 10-15s (and separately
+  // confirmed hitting Postgres's own statement_timeout outright) — this
+  // replaces that recurring scan with a one-time write per campaign.
+  cachedTotalDomains: integer("cached_total_domains"),
+  cachedDomainsChecked: integer("cached_domains_checked"),
+  cachedTotalLinks: integer("cached_total_links"),
+  cachedKeptProspects: integer("cached_kept_prospects"),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------

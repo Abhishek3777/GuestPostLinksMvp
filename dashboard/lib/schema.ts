@@ -84,6 +84,13 @@ export const campaigns = pgTable("campaigns", {
   // see the matching comment in src/db/schema.ts. Queryable here for "how
   // much/where is proxy usage happening" questions.
   proxyBytesUsed: bigint("proxy_bytes_used", { mode: "number" }).notNull().default(0),
+  // Frozen campaigns-list counts — see the matching comment in
+  // src/db/schema.ts. Null means "not computed yet"; written once by
+  // campaigns.service.ts the first time an inactive campaign is listed.
+  cachedTotalDomains: integer("cached_total_domains"),
+  cachedDomainsChecked: integer("cached_domains_checked"),
+  cachedTotalLinks: integer("cached_total_links"),
+  cachedKeptProspects: integer("cached_kept_prospects"),
 });
 
 export const campaignDomains = pgTable(
