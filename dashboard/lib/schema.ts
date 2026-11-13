@@ -91,6 +91,10 @@ export const campaigns = pgTable("campaigns", {
   cachedDomainsChecked: integer("cached_domains_checked"),
   cachedTotalLinks: integer("cached_total_links"),
   cachedKeptProspects: integer("cached_kept_prospects"),
+  // Frozen detail/contact-page stat breakdowns — see the matching comment
+  // in src/db/schema.ts. CachedDetailStats defined below, near
+  // ArchivedSummary (same idea, same shape family).
+  cachedDetailStats: jsonb("cached_detail_stats").$type<CachedDetailStats>(),
 });
 
 export const campaignDomains = pgTable(
@@ -244,6 +248,30 @@ export interface ArchivedSummary {
     hasEmailStatus: number;
   };
   contactFilterCounts: Record<string, number>;
+}
+
+// Same family as ArchivedSummary above, computed and frozen earlier in a
+// campaign's life (the first time its detail page is visited after going
+// inactive, not 7 days later at archival) — see the matching comment in
+// src/db/schema.ts. retryableCount/blockedReasons have no equivalent in
+// ArchivedSummary since retrying and seeing per-domain block reasons stop
+// being meaningful once a campaign is archived (its raw rows are gone).
+export interface CachedDetailStats {
+  totalDomains: number;
+  linksCount: number;
+  domainStatusCounts: { status: string; count: number }[];
+  prospectReasonCounts: { reason: string | null; count: number }[];
+  retryableCount: number;
+  contactStats: {
+    kept: number;
+    looked: number;
+    reached: number;
+    formsConfirmed: number;
+    totalEmails: number;
+    hasEmailStatus: number;
+  };
+  contactFilterCounts: Record<string, number>;
+  blockedReasons: (string | null)[];
 }
 
 /* ---------------------------------------------------------------------------

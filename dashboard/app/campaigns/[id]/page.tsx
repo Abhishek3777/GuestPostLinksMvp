@@ -1,14 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Globe, Link2, ShieldAlert, CheckCircle2 } from "lucide-react";
-import {
-  getCampaignDetail,
-  getCampaignEtas,
-  getCampaignOwnerEmail,
-  getCampaignProspectReasonCounts,
-  getCampaignProspectsPage,
-  getCampaignRetryableCount,
-} from "@/services/campaigns.service";
+import { getCampaignDetail, getCampaignEtas, getCampaignOwnerEmail, getCampaignProspectsPage } from "@/services/campaigns.service";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
 import { CampaignEtaLabel } from "@/components/CampaignEtaLabel";
@@ -44,16 +37,21 @@ export default async function CampaignDetailPage({
   const domainPage = Math.max(1, Number(dpage) || 1);
 
   // The Stage 2 prospect breakdown/table only ever shows here BEFORE contact stage
-  // starts — once it does, this moves to its own tab (see CampaignTabs). These three
-  // only need `id`, not each other, so they run together instead of stacking.
-  const [detail, reasonCounts, retryableCount] = await Promise.all([
-    getCampaignDetail(id, { domainPage, domainStatus: dstatus, domainSearch: dsearch || undefined }),
-    getCampaignProspectReasonCounts(id),
-    getCampaignRetryableCount(id),
-  ]);
+  // starts — once it does, this moves to its own tab (see CampaignTabs).
+  const detail = await getCampaignDetail(id, { domainPage, domainStatus: dstatus, domainSearch: dsearch || undefined });
   if (!detail) notFound();
 
-  const { campaign, domainStatuses, domainStatusesTotal, domainStatusesPageCount, domainStatusCounts, linksCount, totalDomains } = detail;
+  const {
+    campaign,
+    domainStatuses,
+    domainStatusesTotal,
+    domainStatusesPageCount,
+    domainStatusCounts,
+    linksCount,
+    totalDomains,
+    prospectReasonCounts: reasonCounts,
+    retryableCount,
+  } = detail;
 
   // Detail rows are gone (archiveCampaign ran a week after completion) —
   // render the frozen summary instead of live sections. None of the
