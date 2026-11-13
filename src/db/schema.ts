@@ -151,6 +151,14 @@ export const campaigns = pgTable("campaigns", {
   cachedDomainsChecked: integer("cached_domains_checked"),
   cachedTotalLinks: integer("cached_total_links"),
   cachedKeptProspects: integer("cached_kept_prospects"),
+  // Same idea, one level deeper: the campaign detail page and Contact
+  // Results page's full stat breakdowns (domain status counts, prospect
+  // exclusion-reason counts, contact stats, contact filter-chip counts,
+  // blocked-reason text) — computed once, together, the first time an
+  // inactive-but-not-yet-archived campaign's detail page is visited, never
+  // recomputed after. Null means "not computed yet." See
+  // CachedDetailStats in dashboard/lib/schema.ts for the exact shape.
+  cachedDetailStats: jsonb("cached_detail_stats"),
 }).enableRLS();
 
 /* ---------------------------------------------------------------------------

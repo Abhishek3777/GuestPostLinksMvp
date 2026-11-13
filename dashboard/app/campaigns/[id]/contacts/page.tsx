@@ -1,16 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import {
-  getCampaign,
-  getCampaignEtas,
-  getCampaignOwnerEmail,
-  getCampaignBlockedReasons,
-  getCampaignContactFilterCounts,
-  getCampaignContactStats,
-  getCampaignProspectReasonCounts,
-  getCampaignProspectsPage,
-} from "@/services/campaigns.service";
+import { getCampaign, getCampaignDetailStats, getCampaignEtas, getCampaignOwnerEmail, getCampaignProspectsPage } from "@/services/campaigns.service";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessCampaign } from "@/lib/campaignAccess";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -59,13 +50,11 @@ export default async function CampaignContactsPage({
   const { ppage, preason, pcontact, psearch } = await searchParams;
   const page = Math.max(1, Number(ppage) || 1);
 
-  const [stats, filterCounts, blockedReasons, reasonCounts, prospectsPage] = await Promise.all([
-    getCampaignContactStats(id),
-    getCampaignContactFilterCounts(id),
-    getCampaignBlockedReasons(id),
-    getCampaignProspectReasonCounts(id),
+  const [detailStats, prospectsPage] = await Promise.all([
+    getCampaignDetailStats(campaign),
     getCampaignProspectsPage(id, { page, reason: preason || undefined, contact: pcontact || undefined, search: psearch || undefined }),
   ]);
+  const { contactStats: stats, contactFilterCounts: filterCounts, blockedReasons, prospectReasonCounts: reasonCounts } = detailStats;
 
   const shownStatus = displayStatus(campaign);
   const stageStatus = campaign.paused && isActive(campaign) ? shownStatus : campaign.contactStageStatus;
