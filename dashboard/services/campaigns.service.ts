@@ -59,6 +59,47 @@ async function queryCampaignCounts(campaignIds: string[]): Promise<CountMaps> {
   return maps;
 }
 
+// Short stale-while-revalidate cache for the ACTIVE-campaign set specifically
+// — this was deliberately "always fresh, every load, no cache" when it was
+// just a handful of small campaigns, but confirmed live, 2026-11-13: once a
+// single active campaign reaches real scale (Shilpi: 25,158 domains,
+// hundreds of thousands of related rows), that same "just re-count it every
+// load" query is itself expensive enough to hit Postgres's own
+// statement_timeout — this became the dominant cost the moment the
+// INACTIVE-campaign scan above got cached away. A few seconds of staleness
+// on an in-progress campaign's displayed counts is an explicitly acceptable
+// tradeoff here (not guessed at — this is what was asked for), the same way
+// the inactive set's cache already was.
+const ACTIVE_COUNTS_CACHE_MS = 10_000;
+let activeCountsCache: { key: string; at: number; maps: CountMaps } | null = null;
+let activeCountsRefreshing: Promise<void> | null = null;
+
+async function getActiveCampaignCounts(campaignIds: string[]): Promise<CountMaps> {
+  if (campaignIds.length === 0) return emptyCountMaps();
+  const key = [...campaignIds].sort().join(",");
+
+  // Cold start, or the active set itself changed (a campaign started/
+  // finished) — this one call has to actually wait either way.
+  if (!activeCountsCache || activeCountsCache.key !== key) {
+    const maps = await queryCampaignCounts(campaignIds);
+    activeCountsCache = { key, at: Date.now(), maps };
+    return maps;
+  }
+
+  const age = Date.now() - activeCountsCache.at;
+  if (age >= ACTIVE_COUNTS_CACHE_MS && !activeCountsRefreshing) {
+    activeCountsRefreshing = queryCampaignCounts(campaignIds)
+      .then((maps) => {
+        activeCountsCache = { key, at: Date.now(), maps };
+      })
+      .catch((err) => console.error("[listCampaigns] active counts refresh failed:", err))
+      .finally(() => {
+        activeCountsRefreshing = null;
+      });
+  }
+  return activeCountsCache.maps;
+}
+
 // A campaign actively doing work right now, by the SAME compound check
 // getCampaignEtas already uses — not just `status`, since a campaign can show
 // status "completed" (crawl done) while contactStageStatus is still "running"
@@ -193,7 +234,7 @@ export async function listCampaigns(userId?: string) {
   const uncachedLiveIds = uncachedLive.map((c) => c.id);
 
   const [activeMaps, freshInactiveMaps] = await Promise.all([
-    queryCampaignCounts(activeIds),
+    getActiveCampaignCounts(activeIds),
     queryCampaignCounts(uncachedLiveIds),
   ]);
 
