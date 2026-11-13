@@ -86,7 +86,16 @@ export default async function CampaignDetailPage({
     );
   }
 
-  const contactStageStarted = campaign.contactStageStatus !== "not_started";
+  // Not just the status enum — requeueInterruptedJobs() (src/db/jobs.ts) resets
+  // contactStageStatus back to "not_started" on every worker restart for an
+  // auto-contact campaign that was mid-Stage-3 when it died, so the stage can
+  // re-enter cleanly through the main crawl job instead of double-claiming via
+  // the separate contact queue. Confirmed live, 2026-11-13: a campaign with
+  // 68,000+ real contact lookups already saved still read "not_started" after
+  // a restart, which silently dropped it back to this page's old pre-contact
+  // layout — contactStageStartedAt is never touched by that reset, so it's the
+  // one reliable signal that contact work has genuinely begun at some point.
+  const contactStageStarted = campaign.contactStageStatus !== "not_started" || campaign.contactStageStartedAt !== null;
 
   const [ownerEmail, etaMap, prospectsPage] = await Promise.all([
     user.role === "admin" ? getCampaignOwnerEmail(campaign.createdBy) : Promise.resolve(null),
@@ -116,8 +125,15 @@ export default async function CampaignDetailPage({
   const canRetryNoPostsFound = !isActive(campaign) && campaign.status === "completed" && noPostsFoundCount > 0;
   const canForceFreshRecrawl = campaign.incremental && !campaign.archivedAt;
 
+  // contactStageStartedAt check here for the same reason as contactStageStarted
+  // above — without it, this button can reappear (and re-queue Stage 3) on an
+  // auto-contact campaign that already has real contact progress, purely
+  // because a worker restart reset the status enum back to "not_started".
   const canRunContactStage =
-    campaign.mode === "discovery" && campaign.status === "completed" && campaign.contactStageStatus === "not_started";
+    campaign.mode === "discovery" &&
+    campaign.status === "completed" &&
+    campaign.contactStageStatus === "not_started" &&
+    campaign.contactStageStartedAt === null;
 
   return (
     <div className="flex flex-col gap-8">

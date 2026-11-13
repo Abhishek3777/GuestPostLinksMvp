@@ -50,7 +50,10 @@ export default async function CampaignContactsPage({
   // nothing separate left to show here.
   if (campaign.archivedAt) redirect(`/campaigns/${id}`);
 
-  const contactStageStarted = campaign.contactStageStatus !== "not_started";
+  // See the matching comment in ../page.tsx — contactStageStartedAt survives
+  // the worker's restart-recovery reset of contactStageStatus, so it's the
+  // reliable signal here too (this guard 404s the whole page otherwise).
+  const contactStageStarted = campaign.contactStageStatus !== "not_started" || campaign.contactStageStartedAt !== null;
   if (!contactStageStarted) notFound();
 
   const { ppage, preason, pcontact, psearch } = await searchParams;
