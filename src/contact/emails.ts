@@ -48,15 +48,20 @@ export function decodeCloudflareEmail(hex: string): string | null {
 // spelled-out "info at example dot com". A bare " at " next to a normal domain
 // is NOT treated as an @ ("meet me at starbucks.com" is not an email), so the
 // spelled-out form needs "dot" as well.
-const AT_BRACKETED = String.raw`(?:\[\s*at\s*\]|\(\s*at\s*\)|\{\s*at\s*\})`;
-const DOT_ANY = String.raw`(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\s+dot\s+|\.)`;
-const DOT_WORD = String.raw`(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\s+dot\s+)`;
+// Every quantifier here is bounded on purpose (confirmed live, 2026-11-15): with
+// unbounded `+`/`*` a page holding one long run of word characters or
+// whitespace made these regexes go quadratic+, pinning the single Node thread
+// at 100% for minutes — which froze the heartbeat, every timeout timer and
+// every other in-flight lookup, not just that page.
+const AT_BRACKETED = String.raw`(?:\[\s{0,3}at\s{0,3}\]|\(\s{0,3}at\s{0,3}\)|\{\s{0,3}at\s{0,3}\})`;
+const DOT_ANY = String.raw`(?:\[\s{0,3}dot\s{0,3}\]|\(\s{0,3}dot\s{0,3}\)|\{\s{0,3}dot\s{0,3}\}|\s{1,3}dot\s{1,3}|\.)`;
+const DOT_WORD = String.raw`(?:\[\s{0,3}dot\s{0,3}\]|\(\s{0,3}dot\s{0,3}\)|\{\s{0,3}dot\s{0,3}\}|\s{1,3}dot\s{1,3})`;
 const OBFUSCATED_BRACKET_AT = new RegExp(
-  String.raw`([a-z0-9._%+-]+)\s*${AT_BRACKETED}\s*([a-z0-9-]+(?:\s*${DOT_ANY}\s*[a-z0-9-]+)+)`,
+  String.raw`([a-z0-9._%+-]{1,64})\s{0,3}${AT_BRACKETED}\s{0,3}([a-z0-9-]{1,63}(?:\s{0,3}${DOT_ANY}\s{0,3}[a-z0-9-]{1,63}){1,6})`,
   "gi"
 );
 const OBFUSCATED_SPELLED = new RegExp(
-  String.raw`(?<![a-z0-9._%+-])([a-z0-9._%+-]+)\s+at\s+([a-z0-9-]+(?:\s*${DOT_WORD}\s*[a-z0-9-]+)+)`,
+  String.raw`(?<![a-z0-9._%+-])([a-z0-9._%+-]{1,64})\s{1,3}at\s{1,3}([a-z0-9-]{1,63}(?:\s{0,3}${DOT_WORD}\s{0,3}[a-z0-9-]{1,63}){1,6})`,
   "gi"
 );
 const WELL_FORMED = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i;
