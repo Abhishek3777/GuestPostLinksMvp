@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Link2, LayoutGrid, Plus, Radar, ShieldOff, Mail, Trophy, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Link2, LayoutGrid, Plus, Radar, ShieldOff, Mail, Trophy, Users, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { Role } from "@/lib/auth";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
@@ -23,6 +23,9 @@ const NAV = [
   // per-domain drill-down (backlinks/posts/filters/owner).
   { href: "/analytics", label: "Analytics", icon: Trophy, exact: false },
 ];
+
+// Admin only: contactable leads over time, per member.
+const ADMIN_NAV = { href: "/leads", label: "Leads", icon: Users, exact: true };
 
 // Team and Costs live under Settings now, reached via the small gear icon
 // next to the theme toggle (not a side-panel entry anymore) — moved off the
@@ -61,7 +64,7 @@ export function Sidebar({ email, role }: { email: string; role: Role }) {
       </div>
 
       <nav className="flex flex-col gap-1 px-3">
-        {NAV.map(({ href, label, icon: Icon, exact }) => {
+        {(role === "admin" ? [...NAV, ADMIN_NAV] : NAV).map(({ href, label, icon: Icon, exact }) => {
           const hrefPath = href.split("?")[0];
           const active = exact ? pathname === hrefPath : pathname.startsWith(hrefPath);
           return (
