@@ -11,6 +11,12 @@ const parser = new XMLParser({
   processEntities: { maxTotalExpansions: 50_000, maxExpandedLength: 2_000_000 },
 });
 const MAX_SUB_SITEMAPS = 5;
+// Big sites split posts over dozens of numbered files (azbigmedia.com has 64,
+// 1,000 posts each) and the newest ones are NOT in the first five. When the
+// index has more post files than MAX_SUB_SITEMAPS, the last few are read too,
+// on top of the first five. Purely additive: indexes with five or fewer post
+// files behave exactly as before.
+const EXTRA_TAIL_SUB_SITEMAPS = 3;
 
 function asArray<T>(value: T | T[] | undefined): T[] {
   if (!value) return [];
@@ -95,10 +101,15 @@ export async function tryFetchSitemap(
         return Number.isNaN(t) || t >= cutoff;
       });
       // Prefer sitemaps that look post/blog related; fall back to the first few.
-      const prioritized = relevant
-        .filter((s) => /post|blog|article/i.test(s.url))
+      const postLike = relevant.filter((s) => /post|blog|article/i.test(s.url));
+      const prioritized = postLike
         .concat(relevant.filter((s) => !/post|blog|article/i.test(s.url)))
         .slice(0, MAX_SUB_SITEMAPS);
+      if (postLike.length > MAX_SUB_SITEMAPS) {
+        for (const s of postLike.slice(-EXTRA_TAIL_SUB_SITEMAPS)) {
+          if (!prioritized.includes(s)) prioritized.push(s);
+        }
+      }
 
       const posts: DiscoveredPost[] = [];
       for (const sub of prioritized) {

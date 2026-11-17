@@ -1,5 +1,6 @@
 import { fetchText, isHostHeavilyRateLimited, type Fetcher } from "./httpClient.js";
 import { discoverPosts } from "./discovery/index.js";
+import type { DiscoverySource } from "./types.js";
 import { tryFetchFeed } from "./discovery/feed.js";
 import { loadRobots } from "./robots.js";
 import { rankCandidatePosts } from "./discovery/selectRecent.js";
@@ -69,16 +70,36 @@ export interface CrawlDomainResult {
   postsAttempted: number; // total fetch attempts, including skipped non-articles
   skipped: { url: string; reason: string; blocked?: boolean }[];
   processedPosts: ProcessedPost[];
+  // Internal: set when discovery came from the sitemap and nothing usable
+  // came of it, so crawlDomain can try the other discovery methods.
+  sitemapDeadEnd?: boolean;
 }
 
+// A sitemap can "succeed" while holding only old posts (e.g. a huge index
+// whose newest files were never read, or a stale one), which used to end the
+// whole domain as "no posts found" without ever trying the WordPress API,
+// feed or homepage links. If that happens, run once more with the sitemap
+// left out. The first result is kept unless the second one really found posts.
 export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Promise<CrawlDomainResult> {
+  const first = await crawlDomainOnce(domain, opts, []);
+  const { sitemapDeadEnd, ...firstResult } = first;
+  if (!sitemapDeadEnd || opts.signal?.aborted) return firstResult;
+  const second = await crawlDomainOnce(domain, opts, ["sitemap"]);
+  const { sitemapDeadEnd: _ignored, ...secondResult } = second;
+  if (secondResult.postsProcessed > 0) {
+    return { ...secondResult, reason: `sitemap held no recent posts; found them via ${secondResult.discoverySource}` + (secondResult.reason ? ` (${secondResult.reason})` : "") };
+  }
+  return firstResult;
+}
+
+async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSources: DiscoverySource[]): Promise<CrawlDomainResult> {
   const baseFetcher = opts.fetcher ?? fetchText;
   // Wrapped once, here, so every call this function makes through `fetcher`
   // — discovery AND every per-post extraction — automatically carries the
   // cancellation signal, without discovery/extraction needing to know about
   // it at all.
   const fetcher: Fetcher = opts.signal ? (url) => baseFetcher(url, opts.signal) : baseFetcher;
-  const discovery = await discoverPosts(domain, fetcher, opts.days);
+  const discovery = await discoverPosts(domain, fetcher, opts.days, skipSources);
 
   // The feed is now checked every time discovery succeeds via anything
   // other than the feed itself — not just when sitemap "wins" (2026-10-24,
@@ -142,6 +163,9 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
   const candidates = rankCandidatePosts(discovery.posts, { days: opts.days }).filter(
     (p) => !opts.skipPostUrls?.has(p.url)
   );
+  // Not retried on monitoring runs (skipPostUrls): an empty list there can
+  // simply mean nothing new.
+  const sitemapRetryable = discovery.source === "sitemap" && !opts.skipPostUrls?.size;
   const maxAttempts = opts.maxAttempts ?? opts.targetPostCount * 3;
 
   // targetPostCount * 3 is a reasonable budget when targetPostCount is small
@@ -292,6 +316,7 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
       postsAttempted: attempted,
       skipped,
       processedPosts,
+      sitemapDeadEnd: sitemapRetryable && !stoppedForRateLimit && !stoppedForDeadline && !allBlocked,
     };
   }
 
@@ -310,5 +335,6 @@ export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Pro
     postsAttempted: attempted,
     skipped,
     processedPosts,
+    sitemapDeadEnd: sitemapRetryable && processed === 0 && candidates.length === 0 && !stoppedForDeadline,
   };
 }

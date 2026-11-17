@@ -21,7 +21,14 @@ const strategies: [DiscoverySource, typeof tryFetchWpApi][] = [
 // pagination uses this today (to know when to stop asking for more pages);
 // every other strategy ignores it and returns everything it can find, same
 // as before.
-export async function discoverPosts(domain: string, fetcher: Fetcher = fetchText, days?: number): Promise<DiscoveryResult> {
+// `skipSources`: strategies to leave out. Used by pipeline.ts's second pass when
+// a sitemap "succeeded" but turned out to hold nothing recent.
+export async function discoverPosts(
+  domain: string,
+  fetcher: Fetcher = fetchText,
+  days?: number,
+  skipSources: DiscoverySource[] = []
+): Promise<DiscoveryResult> {
   // Cheap probe first: if the homepage itself is a JS-challenge / anti-bot
   // interstitial, every other path on this domain will hit the same wall.
   // Bail out immediately instead of burning 4 more requests to find that out.
@@ -39,6 +46,7 @@ export async function discoverPosts(domain: string, fetcher: Fetcher = fetchText
   const robots = await loadRobots(domain);
 
   for (const [source, strategy] of strategies) {
+    if (skipSources.includes(source)) continue;
     const posts = await strategy(domain, robots, fetcher, days);
     if (posts && posts.length) {
       return {
