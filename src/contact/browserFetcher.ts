@@ -9,8 +9,21 @@ import { sleep } from "../util.js";
 //
 // Used both by local one-off rescue scripts (rescue-domains.ts, rescue-contacts.ts,
 // rescue-blocked.ts) and by the deployed worker's automatic escalation
-// (src/rescueFetchers.ts), which only reaches this for a domain the plain
-// HTTP client already found blocked — not the default path for every domain.
+// (src/rescueFetchers.ts) — for a domain the plain HTTP client found blocked,
+// and (2026-11-19) for a contact page the plain HTTP client read but saw no
+// form on, since the form may be rendered by JavaScript.
+
+// A page whose own script pegs the JS main thread (a busy loop, a stuck
+// third-party widget) never calls back a page.evaluate() — Playwright has no
+// built-in timeout for that call, so without a bound of our own the browser
+// context sits open forever, silently holding one of browserLimit's slots.
+// Confirmed live, 2026-11-18: roughly 1 in 15 real-world pages did exactly
+// this during a one-off sample run. Each risky call below is capped so
+// fetchPageInner's own promise always settles and its `finally` always runs.
+const EVAL_DEADLINE_MS = 8000;
+function withDeadline<T>(promise: Promise<T>, fallback: T): Promise<T> {
+  return Promise.race([promise, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), EVAL_DEADLINE_MS))]);
+}
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -65,17 +78,16 @@ export async function createBrowserFetcher(): Promise<BrowserFetcher> {
       await page.waitForTimeout(1500);
 
       // The challenge redirect can still be in flight; reading the page then throws, so retry briefly.
+      // Each attempt is deadline-bound (see withDeadline above): a page whose JS never
+      // yields must not be able to hold this loop, or the context, open forever.
       let html = "";
       for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          html = await page.content();
-          break;
-        } catch {
-          await page.waitForTimeout(2000);
-        }
+        html = await withDeadline(page.content().catch(() => ""), "");
+        if (html) break;
+        await page.waitForTimeout(2000);
       }
-      const title = await page.title().catch(() => "");
-      const text = (await page.evaluate(() => document.body?.innerText ?? "").catch(() => "")).trim();
+      const title = await withDeadline(page.title().catch(() => ""), "");
+      const text = (await withDeadline(page.evaluate(() => document.body?.innerText ?? "").catch(() => ""), "")).trim();
       const status = response?.status() ?? 200;
 
       const challenged =

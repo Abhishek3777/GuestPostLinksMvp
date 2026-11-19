@@ -63,25 +63,58 @@ const PER_PROSPECT_TIMEOUT_MS = 5 * 60_000;
 // this is the plain-HTTP retry; a real block still only escalates to a browser once,
 // below, never repeated.
 const RETRY_ONCE = new Set<string>(["timeout", "error"]);
+
+// A plain-HTTP pass that read a contact page but saw no form on it is NOT a
+// verdict — it's "I couldn't tell". The form may be rendered by JavaScript, in
+// which case a browser sees it fine. Shipping that guess to FormBlast as if it
+// were a confirmed lead is the single biggest cause of "no form" results there
+// (diagnosed 2026-11-18, see memory formblast-no-form-diagnosis / the exported
+// write-up) — roughly 9x the failure rate of a page where a form was actually
+// seen. This flag is how the escalation below decides a guess is worth a
+// second, real-browser look.
+function isUnconfirmedGuess(result: ContactResult): boolean {
+  return result.status === "form_only" && !result.formConfirmed;
+}
+
 async function lookupWithRetry(domain: string, campaignId: string, signal?: AbortSignal): Promise<ContactResult> {
-  const first = await findContact(domain, fetchText, signal);
-  if (RETRY_ONCE.has(first.status)) {
+  let result = await findContact(domain, fetchText, signal);
+  let blockedForEscalation = result.status === "blocked";
+
+  if (RETRY_ONCE.has(result.status)) {
     await sleep(4000);
-    const second = await findContact(domain, fetchText, signal);
-    if (second.status !== "blocked") return second;
-  } else if (first.status !== "blocked") {
-    return first;
+    const retried = await findContact(domain, fetchText, signal);
+    if (retried.status !== "blocked") {
+      result = retried;
+      blockedForEscalation = false;
+    } else {
+      blockedForEscalation = true; // unchanged from before: a retried timeout/error that comes back blocked still escalates
+    }
   }
 
-  // Blocked (on the first try, or still after the timeout/error retry): one
-  // escalation pass through a real browser. Same as the local
-  // rescue-contacts.ts script, just automatic and one-shot — no repeated
-  // hammering of a site that already said no.
+  const unconfirmedGuess = isUnconfirmedGuess(result);
+  if (!blockedForEscalation && !unconfirmedGuess) return result;
+
+  // One escalation pass through a real browser — for a blocked domain (as
+  // before), or now also for a contact page the plain HTTP client could not
+  // confirm a form on. Same as the local rescue-contacts.ts script, just
+  // automatic and one-shot — no repeated hammering of a site that already
+  // said no, and no repeated browser renders of a page already looked at.
   return browserLimit(async () => {
     const browser = await getBrowserFetcher();
     const counted = countBytes(browser.fetch);
     const viaBrowser = await findContact(domain, counted.fetch, signal);
     recordRescueAttempt({ campaignId, domain, stage: "contact", resultStatus: viaBrowser.status, bytes: counted.bytes() });
+
+    // The plain-HTTP pass already found this contact page but no real message
+    // field on it. The browser pass sees the page AFTER its JavaScript runs —
+    // if it STILL finds neither a confirmed form nor an email, the page
+    // genuinely has nowhere to type a pitch: drop it as a lead instead of
+    // exporting a dead end. (Scoped to the unconfirmed-guess case only; a
+    // blocked domain's browser-escalated result is exported as before, even
+    // when it too comes back an unconfirmed guess — unchanged behaviour.)
+    if (unconfirmedGuess && isUnconfirmedGuess(viaBrowser)) {
+      return { ...viaBrowser, status: "no_contact_found", contactFormUrl: null };
+    }
     return viaBrowser;
   });
 }
@@ -175,6 +208,7 @@ export async function runContactStage(campaignId: string): Promise<"completed" |
                   contactFormUrl: null,
                   finalDomain: null,
                   homepageHtml: null,
+                  formConfirmed: false,
                   reason: `unexpected error: ${(err instanceof Error ? err.message : String(err)).slice(0, 300)}`,
                 })
               );

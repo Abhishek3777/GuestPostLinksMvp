@@ -31,6 +31,13 @@ export interface ContactResult {
   // Email/Contact Form cell is never unexplained. Also lists any emails that
   // were found but not kept.
   reason: string | null;
+  // True only when an actual <form> (or known form embed) with a real message
+  // field was SEEN on contactFormUrl — see detectContactForm. False whenever
+  // contactFormUrl is the "contact page found but no form detected on it" guess
+  // (or there is no contactFormUrl at all). The caller (contactStage.ts) uses
+  // this to decide whether a browser re-check is worth doing: a guess fetched
+  // over plain HTTP may simply be hiding a JavaScript-rendered form.
+  formConfirmed: boolean;
   // The homepage HTML this function already fetched — exposed so the caller
   // (contactStage.ts) can run the gambling/institutional/relevance checks
   // against it without a second fetch of the same page. Null whenever the
@@ -88,6 +95,7 @@ export async function findContact(domain: string, baseFetcher: Fetcher = fetchTe
       contactFormUrl: null,
       finalDomain: null,
       homepageHtml: null,
+      formConfirmed: false,
       reason: !triedWww
         ? `homepage: ${detail}`
         : bareDetail === detail
@@ -223,6 +231,7 @@ export async function findContact(domain: string, baseFetcher: Fetcher = fetchTe
     finalDomain: redirectedTo,
     successorDomain,
     homepageHtml: homepage.body ?? null,
+    formConfirmed: confirmedFormUrl !== null,
     reason: notes.length ? notes.join("; ") : null,
   };
 }
