@@ -148,6 +148,20 @@ export async function findCampaignsEligibleForArchiving(): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
+const PROSPECT_RETENTION_DAYS = Number(process.env.PROSPECT_RETENTION_DAYS) || 90;
+
+// Deletes prospect rows only for campaigns completed more than 90 days ago.
+// Returns how many rows were removed.
+export async function pruneOldProspects(): Promise<number> {
+  const rows = await db
+    .delete(guestPostProspects)
+    .where(
+      sql`${guestPostProspects.campaignId} in (select id from guestpost.campaigns where completed_at < now() - make_interval(days => ${PROSPECT_RETENTION_DAYS}))`
+    )
+    .returning({ id: guestPostProspects.id });
+  return rows.length;
+}
+
 // Returns false (does nothing) for a campaign that isn't actually eligible —
 // callers should only call this on campaigns already confirmed completed
 // 7+ days ago and not yet archived, but this is a safe no-op either way.
@@ -159,7 +173,9 @@ export async function archiveCampaign(campaignId: string): Promise<boolean> {
 
   await db.transaction(async (tx) => {
     await tx.update(campaigns).set({ archivedAt: new Date(), archivedSummary: summary }).where(eq(campaigns.id, campaignId));
-    await tx.delete(guestPostProspects).where(eq(guestPostProspects.campaignId, campaignId));
+    // guest_post_prospects is deliberately NOT deleted here: it holds the emails,
+    // contact_form_url and contact status needed for audits. It is pruned
+    // separately after PROSPECT_RETENTION_DAYS (see pruneOldProspects).
     await tx.delete(guestPostLinks).where(eq(guestPostLinks.campaignId, campaignId));
     await tx.delete(domainCrawlStatus).where(eq(domainCrawlStatus.campaignId, campaignId));
     await tx.delete(campaignDomains).where(eq(campaignDomains.campaignId, campaignId));

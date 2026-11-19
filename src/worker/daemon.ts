@@ -5,7 +5,7 @@ import { runContactStage } from "./contactStage.js";
 import { resetFailedContacts, updateContactStageStatus } from "../db/contactResults.js";
 import { closeRescueFetchers } from "../rescueFetchers.js";
 import { startHeartbeat } from "./heartbeat.js";
-import { archiveCampaign, findCampaignsEligibleForArchiving } from "./archiveCampaign.js";
+import { archiveCampaign, findCampaignsEligibleForArchiving, pruneOldProspects } from "./archiveCampaign.js";
 
 // Long-running worker: polls Supabase for queued campaigns and runs several at
 // a time. Run it as its own service (PM2 / systemd), separate from the
@@ -149,6 +149,8 @@ async function archiveSweepLoop(): Promise<never> {
           console.error(`[archive] campaign ${campaignId} failed to archive:`, err);
         }
       }
+      const pruned = await pruneOldProspects();
+      if (pruned > 0) console.log(`[archive] pruned ${pruned} prospect row(s) older than the retention window`);
     } catch (err) {
       console.error("[archive] sweep error:", err);
     }
