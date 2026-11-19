@@ -7,6 +7,7 @@ import { toValidDate } from "../util.js";
 // How many times a crawl-stage crash auto-retries before being left as a
 // genuine "failed" status for a human to look at.
 const MAX_AUTO_RETRIES = 3;
+const MAX_URL_LENGTH = 1500;
 
 // Called from runCampaignWorker's top-level catch — something escaped every
 // per-domain try/catch (a bug, or a transient DB/network hiccup, e.g. the
@@ -136,12 +137,16 @@ export async function saveCrawlResult(campaignId: string, result: CrawlDomainRes
       },
     });
 
-  if (result.rows.length === 0) return;
+  // A btree index entry can't exceed ~8 KB; very long tracking links (e.g.
+  // newsletter click-through URLs) made a whole batch insert fail. Nobody
+  // wants those as backlinks, so over-long ones are dropped before saving.
+  const rows = result.rows.filter((r) => r.externalLink.length <= MAX_URL_LENGTH && r.guestPostUrl.length <= MAX_URL_LENGTH);
+  if (rows.length === 0) return;
 
   const inserted = await db
     .insert(guestPostLinks)
     .values(
-      result.rows.map((r) => ({
+      rows.map((r) => ({
         campaignId,
         sourceDomain: result.domain,
         guestPostUrl: r.guestPostUrl,

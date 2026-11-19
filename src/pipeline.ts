@@ -1,5 +1,6 @@
 import { fetchText, isHostHeavilyRateLimited, type Fetcher } from "./httpClient.js";
 import { discoverPosts } from "./discovery/index.js";
+import { runRecipe } from "./recipes/index.js";
 import type { DiscoverySource } from "./types.js";
 import { tryFetchFeed } from "./discovery/feed.js";
 import { loadRobots } from "./robots.js";
@@ -73,6 +74,8 @@ export interface CrawlDomainResult {
   // Internal: set when discovery came from the sitemap and nothing usable
   // came of it, so crawlDomain can try the other discovery methods.
   sitemapDeadEnd?: boolean;
+  // Internal: discovery came from a domain recipe (src/recipes).
+  usedRecipe?: boolean;
 }
 
 // A sitemap can "succeed" while holding only old posts (e.g. a huge index
@@ -81,25 +84,38 @@ export interface CrawlDomainResult {
 // feed or homepage links. If that happens, run once more with the sitemap
 // left out. The first result is kept unless the second one really found posts.
 export async function crawlDomain(domain: string, opts: CrawlDomainOptions): Promise<CrawlDomainResult> {
-  const first = await crawlDomainOnce(domain, opts, []);
-  const { sitemapDeadEnd, ...firstResult } = first;
+  let first = await crawlDomainOnce(domain, opts, [], true);
+  // A domain with its own recipe that still produced no posts falls back to
+  // the normal crawl, so it is never worse off than a domain without one.
+  if (first.usedRecipe && first.postsProcessed === 0 && !opts.signal?.aborted) {
+    first = await crawlDomainOnce(domain, opts, [], false);
+  }
+  const { sitemapDeadEnd, usedRecipe: _used, ...firstResult } = first;
   if (!sitemapDeadEnd || opts.signal?.aborted) return firstResult;
-  const second = await crawlDomainOnce(domain, opts, ["sitemap"]);
-  const { sitemapDeadEnd: _ignored, ...secondResult } = second;
+  const second = await crawlDomainOnce(domain, opts, ["sitemap"], false);
+  const { sitemapDeadEnd: _ignored, usedRecipe: _used2, ...secondResult } = second;
   if (secondResult.postsProcessed > 0) {
     return { ...secondResult, reason: `sitemap held no recent posts; found them via ${secondResult.discoverySource}` + (secondResult.reason ? ` (${secondResult.reason})` : "") };
   }
   return firstResult;
 }
 
-async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSources: DiscoverySource[]): Promise<CrawlDomainResult> {
+async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSources: DiscoverySource[], tryRecipe: boolean): Promise<CrawlDomainResult> {
   const baseFetcher = opts.fetcher ?? fetchText;
   // Wrapped once, here, so every call this function makes through `fetcher`
   // — discovery AND every per-post extraction — automatically carries the
   // cancellation signal, without discovery/extraction needing to know about
   // it at all.
   const fetcher: Fetcher = opts.signal ? (url) => baseFetcher(url, opts.signal) : baseFetcher;
-  const discovery = await discoverPosts(domain, fetcher, opts.days, skipSources);
+  // A domain with its own recipe (src/recipes) discovers its posts there;
+  // every other domain, and any recipe that finds nothing, uses the normal path.
+  const recipe = tryRecipe
+    ? await runRecipe({ domain, days: opts.days, targetPostCount: opts.targetPostCount, fetcher, signal: opts.signal, deadline: opts.deadline, skipPostUrls: opts.skipPostUrls })
+    : null;
+  const postFetcher: Fetcher = recipe?.fetchPost ? (url) => recipe.fetchPost!(url, opts.signal) : fetcher;
+  const discovery = recipe
+    ? { domain, status: "success" as const, source: recipe.source, posts: recipe.posts, reason: `special path for this site: ${recipe.note}` }
+    : await discoverPosts(domain, fetcher, opts.days, skipSources);
 
   // The feed is now checked every time discovery succeeds via anything
   // other than the feed itself — not just when sitemap "wins" (2026-10-24,
@@ -131,7 +147,7 @@ async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSou
   // present. wp-api is not given this treatment: it's already genuinely
   // recency-ordered by the site itself, so succeeding there is real evidence
   // of completeness the way sitemap/html-crawl alone aren't.
-  if (discovery.status === "success" && discovery.source !== "feed") {
+  if (!recipe && discovery.status === "success" && discovery.source !== "feed") {
     const robots = await loadRobots(domain);
     const feedPosts = await tryFetchFeed(domain, robots, fetcher);
     if (feedPosts?.length) {
@@ -218,7 +234,7 @@ async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSou
     attempted++;
     // No delay here: every request to a host is already spaced by the
     // per-host limiter in httpClient.ts.
-    const result = await extractLinksFromPost(post.url, domain, fetcher);
+    const result = await extractLinksFromPost(post.url, recipe?.siteDomain ?? domain, postFetcher);
 
     if (result.status !== "success") {
       // Not a real article (too short, fetch failed, etc) — don't burn the
@@ -317,6 +333,7 @@ async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSou
       skipped,
       processedPosts,
       sitemapDeadEnd: sitemapRetryable && !stoppedForRateLimit && !stoppedForDeadline && !allBlocked,
+      usedRecipe: !!recipe,
     };
   }
 
@@ -336,5 +353,6 @@ async function crawlDomainOnce(domain: string, opts: CrawlDomainOptions, skipSou
     skipped,
     processedPosts,
     sitemapDeadEnd: sitemapRetryable && processed === 0 && candidates.length === 0 && !stoppedForDeadline,
+    usedRecipe: !!recipe,
   };
 }
